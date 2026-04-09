@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HL-HH ES Futures Strategy [15m]</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: 'Segoe UI', -apple-system, system-ui, sans-serif;
+    font-size: 13px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* ── Top bar ── */
+#topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 7px 14px;
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+    flex-shrink: 0;
+}
+
+#topbar h1 { font-size: 13px; font-weight: 600; }
+
+.badge {
+    padding: 2px 8px; border-radius: 4px;
+    font-size: 11px; font-weight: 600;
+}
+.badge-blue  { background: rgba(88,166,255,0.15); color: #58a6ff; }
+.badge-green { background: rgba(63,185,80,0.15);  color: #3fb950; }
+
+.price-display { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.price-up   { color: #3fb950; }
+.price-down { color: #f85149; }
+
+.spacer { flex: 1; }
+
+.status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; transition: background 0.3s; }
+.dot-live    { background: #3fb950; animation: pulse 3s infinite; }
+.dot-loading { background: #d29922; animation: pulse 0.8s infinite; }
+.dot-error   { background: #f85149; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
+
+/* Countdown ring */
+#countdown-wrap { display: flex; align-items: center; gap: 8px; }
+#countdown-ring { position: relative; width: 28px; height: 28px; flex-shrink: 0; }
+#countdown-ring svg { transform: rotate(-90deg); }
+#ring-fill {
+    fill: none; stroke: #3fb950; stroke-width: 3; stroke-linecap: round;
+    stroke-dasharray: 69.12; stroke-dashoffset: 0; transition: stroke-dashoffset 1s linear, stroke 0.3s;
+}
+#countdown-text { font-size: 11px; font-variant-numeric: tabular-nums; color: #7d8590; min-width: 42px; }
+
+.btn {
+    padding: 5px 12px; border-radius: 6px;
+    border: 1px solid #30363d; background: #21262d;
+    color: #e6edf3; cursor: pointer;
+    font-size: 12px; font-weight: 500; font-family: inherit;
+    transition: background 0.15s;
+}
+.btn:hover  { background: #30363d; }
+.btn:active { background: #161b22; }
+
+#refresh-flash {
+    position: fixed; inset: 0;
+    background: rgba(63,185,80,0.06);
+    pointer-events: none; opacity: 0;
+    transition: opacity 0.4s; z-index: 50;
+}
+
+/* ── Main layout ── */
+#main { display: flex; flex: 1; overflow: hidden; }
+#chart-wrap { flex: 1; position: relative; overflow: hidden; }
+#chart { width: 100%; height: 100%; }
+
+.overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: #0d1117; z-index: 20;
+    gap: 12px; text-align: center; padding: 32px;
+}
+.spinner {
+    width: 36px; height: 36px;
+    border: 3px solid #30363d; border-top-color: #3fb950;
+    border-radius: 50%; animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.overlay-title { font-size: 16px; font-weight: 600; }
+.overlay-msg   { font-size: 12px; color: #7d8590; line-height: 1.7; max-width: 340px; }
+
+/* ── Side panel ── */
+#panel {
+    width: 272px; display: flex; flex-direction: column;
+    border-left: 1px solid #30363d; background: #161b22;
+    overflow: hidden; flex-shrink: 0;
+}
+
+/* Stats */
+#stats {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 1px; background: #21262d;
+    border-bottom: 1px solid #30363d; flex-shrink: 0;
+}
+.stat { background: #161b22; padding: 8px 11px; }
+.stat-label { font-size: 10px; color: #7d8590; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 3px; }
+.stat-val { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.c-green  { color: #3fb950; }
+.c-blue   { color: #58a6ff; }
+.c-yellow { color: #d29922; }
+.c-red    { color: #f85149; }
+.c-muted  { color: #7d8590; }
+
+/* Filter toggles */
+#filter-section {
+    padding: 8px 10px;
+    border-bottom: 1px solid #30363d;
+    flex-shrink: 0;
+}
+
+#filter-title {
+    font-size: 10px; font-weight: 600;
+    color: #7d8590; text-transform: uppercase;
+    letter-spacing: 0.06em; margin-bottom: 7px;
+    display: flex; justify-content: space-between;
+}
+
+#filter-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 4px;
+}
+
+.f-btn {
+    padding: 4px 0; border-radius: 5px;
+    border: 1px solid #30363d; background: #21262d;
+    color: #7d8590; cursor: pointer;
+    font-size: 10px; font-weight: 600;
+    font-family: inherit; text-align: center;
+    transition: all 0.15s; user-select: none;
+}
+.f-btn:hover { border-color: #484f58; color: #e6edf3; }
+.f-btn.on {
+    background: rgba(63,185,80,0.12);
+    border-color: rgba(63,185,80,0.4);
+    color: #3fb950;
+}
+.f-btn.on:hover { background: rgba(63,185,80,0.2); }
+
+/* Signal list */
+#panel-header {
+    padding: 7px 11px; font-size: 10px; font-weight: 600;
+    color: #7d8590; text-transform: uppercase;
+    letter-spacing: 0.06em; border-bottom: 1px solid #30363d;
+    flex-shrink: 0; display: flex; justify-content: space-between;
+}
+
+#signals-list { flex: 1; overflow-y: auto; }
+#signals-list::-webkit-scrollbar { width: 3px; }
+#signals-list::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; }
+
+.sig-empty { padding: 24px 14px; text-align: center; color: #7d8590; font-size: 12px; line-height: 1.7; }
+
+.sig-item { padding: 8px 11px; border-bottom: 1px solid #1c2128; }
+.sig-item:hover { background: #1c2128; }
+
+.sig-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+
+.sig-type { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 4px; }
+.sig-type.bo { background: rgba(63,185,80,0.15);  color: #3fb950; }
+.sig-type.rt { background: rgba(88,166,255,0.15); color: #58a6ff; }
+
+.sig-time  { font-size: 10px; color: #7d8590; }
+.sig-price { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.sig-levels { display: flex; gap: 10px; font-size: 10px; font-variant-numeric: tabular-nums; }
+
+/* Filter tags on signal */
+.sig-tags { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 3px; }
+.sig-tag {
+    font-size: 9px; padding: 1px 4px; border-radius: 3px;
+    background: #21262d; color: #7d8590; border: 1px solid #30363d;
+}
+
+/* Footer stats bar */
+#footer {
+    padding: 7px 11px; border-top: 1px solid #30363d;
+    display: flex; justify-content: space-between;
+    font-size: 10px; color: #7d8590;
+    flex-shrink: 0;
+}
+</style>
+</head>
+<body>
+
+<div id="refresh-flash"></div>
+
+<!-- Top bar -->
+<div id="topbar">
+    <div class="status-dot dot-loading" id="status-dot"></div>
+    <h1>HL-HH Bullish Structure</h1>
+    <span class="badge badge-blue">ES Futures</span>
+    <span class="badge badge-green">15m</span>
+    <div class="price-display price-up" id="last-price">--</div>
+    <div class="spacer"></div>
+    <div id="countdown-wrap">
+        <div id="countdown-ring">
+            <svg width="28" height="28" viewBox="0 0 28 28">
+                <circle cx="14" cy="14" r="11" fill="none" stroke="#21262d" stroke-width="3"/>
+                <circle id="ring-fill" cx="14" cy="14" r="11"/>
+            </svg>
+        </div>
+        <span id="countdown-text">5:00</span>
+    </div>
+    <button class="btn" onclick="manualRefresh()">Refresh Now</button>
+</div>
+
+<!-- Main -->
+<div id="main">
+    <div id="chart-wrap">
+        <div class="overlay" id="overlay-loading">
+            <div class="spinner"></div>
+            <div class="overlay-title">Loading ES Futures Data</div>
+            <div class="overlay-msg" id="loading-msg">Fetching 15-minute OHLCV data...</div>
+        </div>
+        <div class="overlay" id="overlay-error" style="display:none;">
+            <div style="font-size:28px;">&#9888;</div>
+            <div class="overlay-title c-red">Data Unavailable</div>
+            <div class="overlay-msg" id="error-msg"></div>
+            <button class="btn" onclick="manualRefresh()" style="margin-top:10px;">Retry</button>
+        </div>
+        <div id="chart"></div>
+    </div>
+
+    <div id="panel">
+
+        <!-- Stats grid -->
+        <div id="stats">
+            <div class="stat">
+                <div class="stat-label">Signals</div>
+                <div class="stat-val c-blue" id="s-total">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Filtered Out</div>
+                <div class="stat-val c-muted" id="s-filtered">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Breakouts</div>
+                <div class="stat-val c-green" id="s-bo">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Retests</div>
+                <div class="stat-val c-blue" id="s-rt">0</div>
+            </div>
+        </div>
+
+        <!-- Filter toggles -->
+        <div id="filter-section">
+            <div id="filter-title">
+                <span>Signal Filters</span>
+                <span id="filter-count" class="c-green">6 / 6 on</span>
+            </div>
+            <div id="filter-grid">
+                <button class="f-btn on" id="fb-rth"       onclick="toggleFilter('rth')">RTH Only</button>
+                <button class="f-btn on" id="fb-ema"       onclick="toggleFilter('ema')">EMA 50</button>
+                <button class="f-btn on" id="fb-close"     onclick="toggleFilter('strongClose')">Str Close</button>
+                <button class="f-btn on" id="fb-volume"    onclick="toggleFilter('volume')">Volume</button>
+                <button class="f-btn on" id="fb-structure" onclick="toggleFilter('minStructure')">Structure</button>
+                <button class="f-btn on" id="fb-atr"       onclick="toggleFilter('minATR')">Min ATR</button>
+            </div>
+        </div>
+
+        <!-- Signal list header -->
+        <div id="panel-header">
+            <span>Qualified Signals</span>
+            <span id="sig-count" class="c-muted">--</span>
+        </div>
+
+        <div id="signals-list">
+            <div class="sig-empty">Waiting for data...</div>
+        </div>
+
+        <!-- Footer -->
+        <div id="footer">
+            <span id="hl-count">HL Setups: --</span>
+            <span id="last-update">--</span>
+        </div>
+
+    </div>
+</div>
+
+<script>
+// ============================================================
+// CONFIGURATION
+// ============================================================
+const CFG = {
+    // Pivot detection — 3 bars left gives stronger, more significant pivots
+    leftBars:  3,
+    rightBars: 2,
+
+    // Entry
+    retestTolerance: 0.5,   // ATR mult — zone above level counts as "touching"
+    retestTimeout:   15,    // bars — retest window tightened vs default
+    stopBuffer:      0.5,   // ATR mult below HL for stop placement
+    rrRatio:         2.0,   // take profit = risk x R:R
+
+    // Quality filters — all ON by default
+    // Toggle via the buttons or set false here to permanently disable
+    filters: {
+        rth:            true,   // RTH session only (9:30 AM–4:00 PM ET)
+        ema:            true,   // price must be above EMA 50 at signal bar
+        emaLength:      50,
+        strongClose:    true,   // breakout/retest candle closes in top 35% of range
+        closeThreshold: 0.65,   // 0 = bottom, 1 = top of candle
+        volume:         true,   // signal candle volume > avg x multiplier
+        volumeMult:     1.1,    // 10% above average
+        volumeAvgLen:   20,
+        minStructure:   true,   // HL must be meaningfully higher than prev low
+        structureMult:  0.25,   // must be >= 0.25 ATR above prev low
+        minATR:         true,   // minimum volatility — avoids dead/ranging markets
+        atrMinPct:      0.70,   // current ATR must be >= 70% of 50-bar average
+        atrAvgLen:      50,
+    },
+};
+
+// ============================================================
+// CHART INIT
+// ============================================================
+const chartEl = document.getElementById('chart');
+
+const chart = LightweightCharts.createChart(chartEl, {
+    layout: { background: { color: '#0d1117' }, textColor: '#7d8590' },
+    grid:   { vertLines: { color: '#161b22' }, horzLines: { color: '#1c2128' } },
+    crosshair: {
+        mode: LightweightCharts.CrosshairMode.Normal,
+        vertLine: { color: '#30363d', labelBackgroundColor: '#21262d' },
+        horzLine: { color: '#30363d', labelBackgroundColor: '#21262d' },
+    },
+    rightPriceScale: { borderColor: '#30363d' },
+    timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false, rightOffset: 12 },
+    localization: {
+        // Display all times in Eastern Time (ET) to match ES futures session hours
+        timeFormatter: (unix) => {
+            return new Date(unix * 1000).toLocaleString('en-US', {
+                timeZone: 'America/New_York',
+                month:    '2-digit',
+                day:      '2-digit',
+                hour:     '2-digit',
+                minute:   '2-digit',
+                hour12:   false,
+            });
+        },
+    },
+});
+
+const candleSeries = chart.addCandlestickSeries({
+    upColor: '#3fb950', downColor: '#f85149',
+    borderUpColor: '#3fb950', borderDownColor: '#f85149',
+    wickUpColor: '#3fb950', wickDownColor: '#f85149',
+});
+
+// EMA line overlay
+const emaSeries = chart.addLineSeries({
+    color:             'rgba(88,166,255,0.5)',
+    lineWidth:         1,
+    priceLineVisible:  false,
+    lastValueVisible:  false,
+    crosshairMarkerVisible: false,
+});
+
+new ResizeObserver(() => {
+    chart.applyOptions({ width: chartEl.clientWidth, height: chartEl.clientHeight });
+}).observe(chartEl);
+
+// ============================================================
+// INDICATOR MATH
+// ============================================================
+
+// Wilder's ATR (matches Pine Script ta.atr)
+function calcATR(bars, period) {
+    const out = new Array(bars.length).fill(null);
+    if (bars.length < period) return out;
+    let sum = 0;
+    for (let i = 0; i < period; i++) {
+        sum += i === 0
+            ? bars[0].high - bars[0].low
+            : Math.max(bars[i].high - bars[i].low,
+                Math.abs(bars[i].high - bars[i-1].close),
+                Math.abs(bars[i].low  - bars[i-1].close));
+    }
+    out[period - 1] = sum / period;
+    for (let i = period; i < bars.length; i++) {
+        const tr = Math.max(bars[i].high - bars[i].low,
+            Math.abs(bars[i].high - bars[i-1].close),
+            Math.abs(bars[i].low  - bars[i-1].close));
+        out[i] = (out[i-1] * (period - 1) + tr) / period;
+    }
+    return out;
+}
+
+// Exponential Moving Average
+function calcEMA(bars, period) {
+    const out = new Array(bars.length).fill(null);
+    if (bars.length < period) return out;
+    const k = 2 / (period + 1);
+    let sum = 0;
+    for (let i = 0; i < period; i++) sum += bars[i].close;
+    out[period - 1] = sum / period;
+    for (let i = period; i < bars.length; i++) {
+        out[i] = bars[i].close * k + out[i-1] * (1 - k);
+    }
+    return out;
+}
+
+// Simple Moving Average (for volume and ATR baseline)
+function calcSMA(values, period) {
+    const out = new Array(values.length).fill(null);
+    for (let i = period - 1; i < values.length; i++) {
+        let s = 0;
+        for (let j = i - period + 1; j <= i; j++) s += (values[j] || 0);
+        out[i] = s / period;
+    }
+    return out;
+}
+
+// Pivot detection
+function isPivotHigh(bars, idx, L, R) {
+    if (idx - L < 0 || idx + R >= bars.length) return false;
+    const p = bars[idx].high;
+    for (let i = idx - L; i < idx;      i++) if (bars[i].high >= p) return false;
+    for (let i = idx + 1; i <= idx + R; i++) if (bars[i].high >= p) return false;
+    return true;
+}
+
+function isPivotLow(bars, idx, L, R) {
+    if (idx - L < 0 || idx + R >= bars.length) return false;
+    const p = bars[idx].low;
+    for (let i = idx - L; i < idx;      i++) if (bars[i].low <= p) return false;
+    for (let i = idx + 1; i <= idx + R; i++) if (bars[i].low <= p) return false;
+    return true;
+}
+
+// RTH check — 9:30 AM to 4:00 PM Eastern Time (handles DST)
+function isRTH(unixSeconds) {
+    const d = new Date(unixSeconds * 1000);
+    const et = d.toLocaleString('en-US', {
+        timeZone: 'America/New_York',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+    });
+    const [h, m] = et.split(':').map(Number);
+    const mins = h * 60 + m;
+    return mins >= 9 * 60 + 30 && mins < 16 * 60;
+}
+
+// ============================================================
+// STRATEGY RUNNER
+// ============================================================
+function runStrategy(bars) {
+    const { leftBars:L, rightBars:R,
+            retestTolerance, retestTimeout, stopBuffer, rrRatio,
+            filters: F } = CFG;
+
+    // Pre-compute indicators
+    const atr    = calcATR(bars, 14);
+    const atrAvg = calcSMA(atr, F.atrAvgLen);
+    const ema    = calcEMA(bars, F.emaLength);
+    const vols   = bars.map(b => b.volume || 0);
+    const volAvg = calcSMA(vols, F.volumeAvgLen);
+
+    let prevHigh=null, lastHigh=null, prevLow=null, lastLow=null;
+    let setupActive=false, breakoutLevel=null, breakoutFired=false, lockedHL=null;
+    let retestActive=false, retestLevel=null, inZone=false, retestStart=-1, retestFired=false;
+
+    const markers=[], signals=[];
+    let hlCount=0, filteredCount=0;
+
+    for (let i = 0; i < bars.length; i++) {
+        const bar    = bars[i];
+        const pIdx   = i - R;
+        const atrVal = atr[i] || (bar.high - bar.low) || 1;
+
+        let newHigh=false, highPrice=null, newLow=false, lowPrice=null;
+
+        // ── Pivot detection (at confirmation bar i, pivot is at pIdx) ──
+        if (pIdx >= 0) {
+            if (isPivotHigh(bars, pIdx, L, R)) {
+                newHigh=true; highPrice=bars[pIdx].high;
+                prevHigh=lastHigh; lastHigh=highPrice;
+                markers.push({ time:bars[pIdx].time, position:'aboveBar',
+                    color:'rgba(248,81,73,0.45)', shape:'circle', size:0.4 });
+            }
+            if (isPivotLow(bars, pIdx, L, R)) {
+                newLow=true; lowPrice=bars[pIdx].low;
+                prevLow=lastLow; lastLow=lowPrice;
+                markers.push({ time:bars[pIdx].time, position:'belowBar',
+                    color:'rgba(0,200,200,0.45)', shape:'circle', size:0.4 });
+            }
+        }
+
+        const isHH = newHigh && prevHigh !== null && highPrice > prevHigh;
+
+        // ── Higher Low detection with Structure filter ──
+        // Structure filter: HL must be meaningfully higher — not just 1 tick
+        const structureOk = !F.minStructure ||
+            (prevLow !== null && lowPrice > prevLow + atrVal * F.structureMult);
+
+        const isHL = newLow && prevLow !== null && lowPrice > prevLow && structureOk;
+
+        if (isHL) {
+            hlCount++;
+            markers.push({ time:bars[pIdx].time, position:'belowBar',
+                color:'#00ff88', shape:'arrowUp', text:'HL', size:1 });
+            if (lastHigh !== null) {
+                setupActive=true; breakoutLevel=lastHigh;
+                breakoutFired=false; lockedHL=lowPrice;
+            }
+        }
+        if (isHH) {
+            markers.push({ time:bars[pIdx].time, position:'aboveBar',
+                color:'#ff6b6b', shape:'arrowDown', text:'HH', size:1 });
+        }
+
+        // ── Quality filters applied at the SIGNAL bar ──
+        const candleRange = bar.high - bar.low;
+        const closePos    = candleRange > 0 ? (bar.close - bar.low) / candleRange : 0.5;
+
+        const rthOk      = !F.rth         || isRTH(bar.time);
+        const emaOk      = !F.ema         || (ema[i] !== null && bar.close > ema[i]);
+        const closeOk    = !F.strongClose || closePos >= F.closeThreshold;
+        const volumeOk   = !F.volume      || (volAvg[i] !== null && bar.volume > volAvg[i] * F.volumeMult);
+        const atrOk      = !F.minATR      || (atrAvg[i] !== null && atrVal >= atrAvg[i] * F.atrMinPct);
+
+        const allFiltersOk = rthOk && emaOk && closeOk && volumeOk && atrOk;
+
+        // ── Option A: Breakout ──
+        const isBreakout = setupActive && !breakoutFired && breakoutLevel !== null && bar.close > breakoutLevel;
+
+        if (isBreakout) {
+            breakoutFired=true; setupActive=false;
+
+            if (allFiltersOk) {
+                const stop=lockedHL - atrVal*stopBuffer;
+                const tp=bar.close + (bar.close - stop)*rrRatio;
+                markers.push({ time:bar.time, position:'belowBar',
+                    color:'#00ee00', shape:'arrowUp', text:'BUY BO', size:2 });
+                signals.push({
+                    type:'Breakout', time:bar.time, price:bar.close, stop, tp,
+                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk),
+                });
+            } else {
+                // Filtered out — show a faint grey marker so user can see what was skipped
+                filteredCount++;
+                markers.push({ time:bar.time, position:'belowBar',
+                    color:'rgba(120,120,120,0.35)', shape:'arrowUp', size:1 });
+            }
+
+            // Arm retest regardless of whether entry was filtered
+            retestActive=true; retestLevel=breakoutLevel;
+            inZone=false; retestStart=i; retestFired=false;
+        }
+
+        // ── Option B: Retest ──
+        if (retestActive) {
+            if (i - retestStart > retestTimeout)                                   retestActive=false;
+            else if (bar.close < retestLevel - atrVal)                             retestActive=false;
+            else if (!inZone && bar.low <= retestLevel + atrVal*retestTolerance)   inZone=true;
+        }
+
+        const isRetest = retestActive && inZone && !retestFired && bar.close > retestLevel;
+
+        if (isRetest) {
+            retestFired=true; retestActive=false;
+
+            if (allFiltersOk) {
+                const stop=lockedHL - atrVal*stopBuffer;
+                const tp=bar.close + (bar.close - stop)*rrRatio;
+                markers.push({ time:bar.time, position:'belowBar',
+                    color:'#00ccff', shape:'arrowUp', text:'BUY RT', size:2 });
+                signals.push({
+                    type:'Retest', time:bar.time, price:bar.close, stop, tp,
+                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk),
+                });
+            } else {
+                filteredCount++;
+                markers.push({ time:bar.time, position:'belowBar',
+                    color:'rgba(120,120,120,0.35)', shape:'arrowUp', size:1 });
+            }
+        }
+    }
+
+    markers.sort((a,b) => a.time > b.time ? 1 : a.time < b.time ? -1 : 0);
+
+    // Return EMA data for chart plotting
+    const emaLine = ema
+        .map((v, i) => v !== null ? { time: bars[i].time, value: v } : null)
+        .filter(Boolean);
+
+    return { markers, signals, hlCount, filteredCount, emaLine };
+}
+
+// Build a list of which filters passed (for signal tooltip)
+function buildTags(rth, ema, close, vol, atr) {
+    const tags = [];
+    if (CFG.filters.rth         && rth)   tags.push('RTH');
+    if (CFG.filters.ema         && ema)   tags.push('EMA');
+    if (CFG.filters.strongClose && close) tags.push('Close');
+    if (CFG.filters.volume      && vol)   tags.push('Vol');
+    if (CFG.filters.minATR      && atr)   tags.push('ATR');
+    return tags;
+}
+
+// ============================================================
+// DATA FETCHING — Yahoo Finance ES=F
+// ============================================================
+function fetchWithTimeout(url, ms) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(t));
+}
+
+async function fetchData() {
+    const yf1 = 'https://query1.finance.yahoo.com/v8/finance/chart/ES=F?interval=15m&range=5d&includePrePost=false';
+    const yf2 = 'https://query2.finance.yahoo.com/v8/finance/chart/ES=F?interval=15m&range=5d&includePrePost=false';
+
+    const attempts = [
+        { url: yf1,                                                             ms: 8000 },
+        { url: yf2,                                                             ms: 8000 },
+        { url: 'https://corsproxy.io/?' + encodeURIComponent(yf1),             ms: 20000 },
+        { url: 'https://corsproxy.io/?' + encodeURIComponent(yf2),             ms: 20000 },
+        { url: 'https://api.allorigins.win/raw?url=' + encodeURIComponent(yf1), ms: 20000 },
+        { url: 'https://thingproxy.freeboard.io/fetch/' + yf1,                 ms: 20000 },
+    ];
+
+    const errors = [];
+    for (const { url, ms } of attempts) {
+        try {
+            const r = await fetchWithTimeout(url, ms);
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return parseYF(await r.json());
+        } catch (e) { errors.push(e.message); }
+    }
+    throw new Error('All sources failed. Open via start.bat.\n\n' + errors.join(' | '));
+}
+
+function parseYF(json) {
+    const res = json?.chart?.result?.[0];
+    if (!res) throw new Error('No result in response');
+    const ts = res.timestamp;
+    const q  = res.indicators.quote[0];
+    const last = res.meta?.regularMarketPrice ?? null;
+    const bars = [];
+    for (let i = 0; i < ts.length; i++) {
+        if (q.open[i] == null || q.close[i] == null) continue;
+        bars.push({
+            time:   ts[i],
+            open:   q.open[i],
+            high:   q.high[i],
+            low:    q.low[i],
+            close:  q.close[i],
+            volume: q.volume[i] || 0,
+        });
+    }
+    if (!bars.length) throw new Error('No valid candles in response');
+    return { bars, last };
+}
+
+// ============================================================
+// COUNTDOWN RING
+// ============================================================
+const REFRESH_SECONDS = 5 * 60;
+const CIRCUMFERENCE   = 2 * Math.PI * 11; // 69.12
+const ringEl   = document.getElementById('ring-fill');
+const countEl  = document.getElementById('countdown-text');
+let secondsLeft    = REFRESH_SECONDS;
+let countdownTimer = null;
+
+function startCountdown() {
+    secondsLeft = REFRESH_SECONDS;
+    if (countdownTimer) clearInterval(countdownTimer);
+    countdownTimer = setInterval(() => {
+        secondsLeft--;
+        const progress = secondsLeft / REFRESH_SECONDS;
+        ringEl.style.strokeDashoffset = CIRCUMFERENCE * (1 - progress);
+        ringEl.style.stroke = secondsLeft <= 20 ? '#f85149' : secondsLeft <= 60 ? '#d29922' : '#3fb950';
+        const m = Math.floor(secondsLeft / 60);
+        const s = secondsLeft % 60;
+        countEl.textContent = `${m}:${s.toString().padStart(2,'0')}`;
+        if (secondsLeft <= 0) loadData();
+    }, 1000);
+}
+
+// ============================================================
+// UI HELPERS
+// ============================================================
+function f(n, d=2) { return n != null ? Number(n).toFixed(d) : '--'; }
+
+function fmtTime(unix) {
+    return new Date(unix * 1000).toLocaleString('en-US', {
+        timeZone: 'America/New_York',
+        month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false,
+    });
+}
+
+function showOverlay(id) {
+    document.getElementById('overlay-loading').style.display = id === 'loading' ? 'flex' : 'none';
+    document.getElementById('overlay-error').style.display   = id === 'error'   ? 'flex' : 'none';
+}
+
+function flashRefresh() {
+    const el = document.getElementById('refresh-flash');
+    el.style.opacity = '1';
+    setTimeout(() => { el.style.opacity = '0'; }, 400);
+}
+
+function renderSignals(signals) {
+    const list = document.getElementById('signals-list');
+    document.getElementById('sig-count').textContent = signals.length + ' passed';
+
+    if (!signals.length) {
+        list.innerHTML = '<div class="sig-empty">No signals passed all filters in this window.<br><br>Try turning off individual filters above to see more.</div>';
+        return;
+    }
+
+    list.innerHTML = [...signals].reverse().map(s => `
+        <div class="sig-item">
+            <div class="sig-row">
+                <span class="sig-type ${s.type === 'Breakout' ? 'bo' : 'rt'}">${s.type}</span>
+                <span class="sig-time">${fmtTime(s.time)}</span>
+            </div>
+            <div class="sig-row">
+                <span class="sig-price">${f(s.price)}</span>
+                <div class="sig-levels">
+                    <span class="c-red">SL ${f(s.stop)}</span>
+                    <span class="c-green">TP ${f(s.tp)}</span>
+                </div>
+            </div>
+            ${s.tags.length ? `<div class="sig-tags">${s.tags.map(t => `<span class="sig-tag">${t}</span>`).join('')}</div>` : ''}
+        </div>
+    `).join('');
+}
+
+function updateFilterCount() {
+    const F = CFG.filters;
+    const active = [F.rth, F.ema, F.strongClose, F.volume, F.minStructure, F.minATR].filter(Boolean).length;
+    const el = document.getElementById('filter-count');
+    el.textContent = `${active} / 6 on`;
+    el.className = active === 6 ? 'c-green' : active >= 3 ? 'c-yellow' : 'c-red';
+}
+
+// ============================================================
+// FILTER TOGGLE — re-runs strategy on existing bars (no refetch)
+// ============================================================
+let _lastBars = null;
+let _lastPrice = null;
+
+function toggleFilter(key) {
+    CFG.filters[key] = !CFG.filters[key];
+
+    // Update button appearance
+    const idMap = {
+        rth:'fb-rth', ema:'fb-ema', strongClose:'fb-close',
+        volume:'fb-volume', minStructure:'fb-structure', minATR:'fb-atr'
+    };
+    const btn = document.getElementById(idMap[key]);
+    if (btn) btn.className = 'f-btn ' + (CFG.filters[key] ? 'on' : '');
+
+    updateFilterCount();
+
+    // Re-run strategy instantly on cached bars
+    if (_lastBars) applyStrategy(_lastBars, _lastPrice, false);
+}
+
+// ============================================================
+// APPLY STRATEGY + RENDER
+// ============================================================
+function applyStrategy(bars, lastPrice, fitContent) {
+    const { markers, signals, hlCount, filteredCount, emaLine } = runStrategy(bars);
+
+    candleSeries.setData(bars);
+    candleSeries.setMarkers(markers);
+    emaSeries.setData(CFG.filters.ema ? emaLine : []);
+
+    if (fitContent) chart.timeScale().fitContent();
+
+    const price = lastPrice ?? bars.at(-1)?.close;
+    document.getElementById('last-price').textContent = f(price, 2);
+
+    const bo = signals.filter(s => s.type === 'Breakout').length;
+    const rt = signals.filter(s => s.type === 'Retest').length;
+    document.getElementById('s-total').textContent    = signals.length;
+    document.getElementById('s-filtered').textContent = filteredCount;
+    document.getElementById('s-bo').textContent       = bo;
+    document.getElementById('s-rt').textContent       = rt;
+    document.getElementById('hl-count').textContent   = `HL Setups: ${hlCount}`;
+
+    renderSignals(signals);
+}
+
+// ============================================================
+// MAIN LOAD
+// ============================================================
+let isFirstLoad = true;
+
+async function loadData() {
+    if (isFirstLoad) showOverlay('loading');
+    document.getElementById('status-dot').className = 'status-dot dot-loading';
+    document.getElementById('loading-msg').textContent = isFirstLoad ? 'Fetching 15-minute OHLCV data...' : 'Refreshing...';
+
+    try {
+        const { bars, last } = await fetchData();
+        _lastBars  = bars;
+        _lastPrice = last;
+
+        applyStrategy(bars, last, isFirstLoad);
+
+        if (isFirstLoad) { isFirstLoad = false; }
+
+        showOverlay(null);
+        document.getElementById('status-dot').className = 'status-dot dot-live';
+        document.getElementById('last-update').textContent =
+            'Updated ' + new Date().toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit' });
+
+        flashRefresh();
+        startCountdown();
+
+    } catch (err) {
+        console.error(err);
+        document.getElementById('error-msg').textContent = err.message;
+        showOverlay('error');
+        document.getElementById('status-dot').className = 'status-dot dot-error';
+    }
+}
+
+function manualRefresh() {
+    if (countdownTimer) clearInterval(countdownTimer);
+    loadData();
+}
+
+// ============================================================
+// BOOT
+// ============================================================
+updateFilterCount();
+loadData();
+</script>
+</body>
+</html>
