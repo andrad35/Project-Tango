@@ -1,0 +1,1504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HL-HH ES Futures Strategy [15m]</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: 'Segoe UI', -apple-system, system-ui, sans-serif;
+    font-size: 13px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* ── Top bar ── */
+#topbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 7px 14px;
+    background: #161b22;
+    border-bottom: 1px solid #30363d;
+    flex-shrink: 0;
+}
+
+#topbar h1 { font-size: 13px; font-weight: 600; }
+
+.badge {
+    padding: 2px 8px; border-radius: 4px;
+    font-size: 11px; font-weight: 600;
+}
+.badge-blue  { background: rgba(88,166,255,0.15); color: #58a6ff; }
+.badge-green { background: rgba(63,185,80,0.15);  color: #3fb950; }
+
+.price-display { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.price-up   { color: #3fb950; }
+.price-down { color: #f85149; }
+
+.spacer { flex: 1; }
+
+.status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; transition: background 0.3s; }
+.dot-live    { background: #3fb950; animation: pulse 3s infinite; }
+.dot-loading { background: #d29922; animation: pulse 0.8s infinite; }
+.dot-error   { background: #f85149; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
+
+/* Countdown ring */
+#countdown-wrap { display: flex; align-items: center; gap: 8px; }
+#countdown-ring { position: relative; width: 28px; height: 28px; flex-shrink: 0; }
+#countdown-ring svg { transform: rotate(-90deg); }
+#ring-fill {
+    fill: none; stroke: #3fb950; stroke-width: 3; stroke-linecap: round;
+    stroke-dasharray: 69.12; stroke-dashoffset: 0; transition: stroke-dashoffset 1s linear, stroke 0.3s;
+}
+#countdown-text { font-size: 11px; font-variant-numeric: tabular-nums; color: #7d8590; min-width: 42px; }
+
+.btn {
+    padding: 5px 12px; border-radius: 6px;
+    border: 1px solid #30363d; background: #21262d;
+    color: #e6edf3; cursor: pointer;
+    font-size: 12px; font-weight: 500; font-family: inherit;
+    transition: background 0.15s;
+}
+.btn:hover  { background: #30363d; }
+.btn:active { background: #161b22; }
+.btn.alert-on {
+    background: rgba(210,153,0,0.15);
+    border-color: rgba(210,153,0,0.5);
+    color: #d29922;
+}
+
+#refresh-flash {
+    position: fixed; inset: 0;
+    background: rgba(63,185,80,0.06);
+    pointer-events: none; opacity: 0;
+    transition: opacity 0.4s; z-index: 50;
+}
+
+/* ── Main layout ── */
+#main { display: flex; flex: 1; overflow: hidden; }
+#chart-wrap { flex: 1; position: relative; overflow: hidden; }
+#chart { width: 100%; height: 100%; }
+
+.overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: #0d1117; z-index: 20;
+    gap: 12px; text-align: center; padding: 32px;
+}
+.spinner {
+    width: 36px; height: 36px;
+    border: 3px solid #30363d; border-top-color: #3fb950;
+    border-radius: 50%; animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.overlay-title { font-size: 16px; font-weight: 600; }
+.overlay-msg   { font-size: 12px; color: #7d8590; line-height: 1.7; max-width: 340px; }
+
+/* ── Side panel ── */
+#panel {
+    width: 272px; display: flex; flex-direction: column;
+    border-left: 1px solid #30363d; background: #161b22;
+    overflow: hidden; flex-shrink: 0;
+}
+
+/* Stats */
+#stats {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 1px; background: #21262d;
+    border-bottom: 1px solid #30363d; flex-shrink: 0;
+}
+.stat { background: #161b22; padding: 8px 11px; }
+.stat-label { font-size: 10px; color: #7d8590; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 3px; }
+.stat-val { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.c-green  { color: #3fb950; }
+.c-blue   { color: #58a6ff; }
+.c-yellow { color: #d29922; }
+.c-red    { color: #f85149; }
+.c-muted  { color: #7d8590; }
+
+/* Filter toggles */
+#filter-section {
+    padding: 8px 10px;
+    border-bottom: 1px solid #30363d;
+    flex-shrink: 0;
+}
+
+#filter-title {
+    font-size: 10px; font-weight: 600;
+    color: #7d8590; text-transform: uppercase;
+    letter-spacing: 0.06em; margin-bottom: 7px;
+    display: flex; justify-content: space-between;
+}
+
+#filter-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 4px;
+}
+
+.f-btn {
+    padding: 4px 0; border-radius: 5px;
+    border: 1px solid #30363d; background: #21262d;
+    color: #7d8590; cursor: pointer;
+    font-size: 10px; font-weight: 600;
+    font-family: inherit; text-align: center;
+    transition: all 0.15s; user-select: none;
+}
+.f-btn:hover { border-color: #484f58; color: #e6edf3; }
+.f-btn.on {
+    background: rgba(63,185,80,0.12);
+    border-color: rgba(63,185,80,0.4);
+    color: #3fb950;
+}
+.f-btn.on:hover { background: rgba(63,185,80,0.2); }
+
+/* Signal list */
+#panel-header {
+    padding: 7px 11px; font-size: 10px; font-weight: 600;
+    color: #7d8590; text-transform: uppercase;
+    letter-spacing: 0.06em; border-bottom: 1px solid #30363d;
+    flex-shrink: 0; display: flex; justify-content: space-between;
+}
+
+#signals-list { flex: 1; overflow-y: auto; }
+#signals-list::-webkit-scrollbar { width: 3px; }
+#signals-list::-webkit-scrollbar-thumb { background: #30363d; border-radius: 2px; }
+
+.sig-empty { padding: 24px 14px; text-align: center; color: #7d8590; font-size: 12px; line-height: 1.7; }
+
+.sig-item { padding: 8px 11px; border-bottom: 1px solid #1c2128; }
+.sig-item:hover { background: #1c2128; }
+
+.sig-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+
+.sig-type { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 4px; }
+.sig-type.bo { background: rgba(63,185,80,0.15);  color: #3fb950; }
+.sig-type.rt { background: rgba(88,166,255,0.15); color: #58a6ff; }
+
+.sig-time  { font-size: 10px; color: #7d8590; }
+.sig-price { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.sig-levels { display: flex; gap: 10px; font-size: 10px; font-variant-numeric: tabular-nums; }
+
+/* Filter tags on signal */
+.sig-tags { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 3px; }
+.sig-tag {
+    font-size: 9px; padding: 1px 4px; border-radius: 3px;
+    background: #21262d; color: #7d8590; border: 1px solid #30363d;
+}
+
+/* Footer stats bar */
+#footer {
+    padding: 7px 11px; border-top: 1px solid #30363d;
+    display: flex; justify-content: space-between;
+    font-size: 10px; color: #7d8590;
+    flex-shrink: 0;
+}
+</style>
+</head>
+<body>
+
+<div id="refresh-flash"></div>
+
+<!-- Top bar -->
+<div id="topbar">
+    <div class="status-dot dot-loading" id="status-dot"></div>
+    <h1>HL-HH Bullish Structure</h1>
+    <span class="badge badge-blue">ES Futures</span>
+    <span class="badge badge-green">15m</span>
+    <div class="price-display price-up" id="last-price">--</div>
+    <div class="spacer"></div>
+    <div id="countdown-wrap">
+        <div id="countdown-ring">
+            <svg width="28" height="28" viewBox="0 0 28 28">
+                <circle cx="14" cy="14" r="11" fill="none" stroke="#21262d" stroke-width="3"/>
+                <circle id="ring-fill" cx="14" cy="14" r="11"/>
+            </svg>
+        </div>
+        <span id="countdown-text">5:00</span>
+    </div>
+    <button class="btn" onclick="manualRefresh()">Refresh Now</button>
+    <button class="btn" id="alert-btn" onclick="toggleAlerts()" title="Toggle signal alerts">&#128276; Alerts: OFF</button>
+    <button class="btn" id="bt-btn" onclick="openBacktest()" style="background:rgba(88,166,255,0.1);border-color:rgba(88,166,255,0.3);color:#58a6ff;">Backtest</button>
+</div>
+
+<!-- Main -->
+<div id="main">
+    <div id="chart-wrap">
+        <div class="overlay" id="overlay-loading">
+            <div class="spinner"></div>
+            <div class="overlay-title">Loading ES Futures Data</div>
+            <div class="overlay-msg" id="loading-msg">Fetching 15-minute OHLCV data...</div>
+        </div>
+        <div class="overlay" id="overlay-error" style="display:none;">
+            <div style="font-size:28px;">&#9888;</div>
+            <div class="overlay-title c-red">Data Unavailable</div>
+            <div class="overlay-msg" id="error-msg"></div>
+            <button class="btn" onclick="manualRefresh()" style="margin-top:10px;">Retry</button>
+        </div>
+        <div id="chart"></div>
+    </div>
+
+    <div id="panel">
+
+        <!-- Stats grid -->
+        <div id="stats">
+            <div class="stat">
+                <div class="stat-label">Signals</div>
+                <div class="stat-val c-blue" id="s-total">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Filtered Out</div>
+                <div class="stat-val c-muted" id="s-filtered">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Breakouts</div>
+                <div class="stat-val c-green" id="s-bo">0</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Retests</div>
+                <div class="stat-val c-blue" id="s-rt">0</div>
+            </div>
+        </div>
+
+        <!-- Filter toggles -->
+        <div id="filter-section">
+            <div id="filter-title">
+                <span>Signal Filters</span>
+                <span id="filter-count" class="c-green">9 / 9 on</span>
+            </div>
+            <div id="filter-grid">
+                <button class="f-btn on" id="fb-rth"       onclick="toggleFilter('rth')">RTH Only</button>
+                <button class="f-btn on" id="fb-ema"       onclick="toggleFilter('ema')">EMA 50</button>
+                <button class="f-btn on" id="fb-close"     onclick="toggleFilter('strongClose')">Str Close</button>
+                <button class="f-btn on" id="fb-volume"    onclick="toggleFilter('volume')">Volume</button>
+                <button class="f-btn on" id="fb-structure" onclick="toggleFilter('minStructure')">Structure</button>
+                <button class="f-btn on" id="fb-atr"       onclick="toggleFilter('minATR')">Min ATR</button>
+                <button class="f-btn on" id="fb-adx"       onclick="toggleFilter('adx')">ADX &gt;20</button>
+                <button class="f-btn on" id="fb-vwap"      onclick="toggleFilter('vwap')">VWAP</button>
+                <button class="f-btn on" id="fb-session"   onclick="toggleFilter('sessionHours')">Sess Hrs</button>
+            </div>
+        </div>
+
+        <!-- Signal list header -->
+        <div id="panel-header">
+            <span>Qualified Signals</span>
+            <span id="sig-count" class="c-muted">--</span>
+        </div>
+
+        <div id="signals-list">
+            <div class="sig-empty">Waiting for data...</div>
+        </div>
+
+        <!-- Footer -->
+        <div id="footer">
+            <span id="hl-count">HL Setups: --</span>
+            <span id="last-update">--</span>
+        </div>
+
+    </div>
+</div>
+
+<script>
+// ============================================================
+// CONFIGURATION
+// ============================================================
+const CFG = {
+    // Pivot detection — 3 bars left gives stronger, more significant pivots
+    leftBars:  3,
+    rightBars: 2,
+
+    // Entry
+    retestTolerance: 0.5,   // ATR mult — zone above level counts as "touching"
+    retestTimeout:   15,    // bars — retest window tightened vs default
+    stopBuffer:      0.5,   // ATR mult below HL for stop placement
+    rrRatio:         2.0,   // take profit = risk x R:R
+
+    // Quality filters — all ON by default
+    // Toggle via the buttons or set false here to permanently disable
+    filters: {
+        rth:            true,   // RTH session only (9:30 AM–4:00 PM ET)
+        ema:            true,   // price must be above EMA 50 at signal bar
+        emaLength:      50,
+        strongClose:    true,   // breakout/retest candle closes in top 35% of range
+        closeThreshold: 0.65,   // 0 = bottom, 1 = top of candle
+        volume:         true,   // signal candle volume > avg x multiplier
+        volumeMult:     1.1,    // 10% above average
+        volumeAvgLen:   20,
+        minStructure:   true,   // HL must be meaningfully higher than prev low
+        structureMult:  0.25,   // must be >= 0.25 ATR above prev low
+        minATR:         true,   // minimum volatility — avoids dead/ranging markets
+        atrMinPct:      0.70,   // current ATR must be >= 70% of 50-bar average
+        atrAvgLen:      50,
+
+        // ── New filters targeting 60% win rate ──
+        adx:            true,   // ADX > threshold = trending market (not ranging/choppy)
+        adxThreshold:   20,     // standard trend strength threshold
+        adxLength:      14,
+        vwap:           true,   // price above daily VWAP = bullish institutional bias
+        sessionHours:   true,   // high-probability hours only (open + power hour)
+                                //   Opening: 9:30–11:30 AM ET (directional momentum)
+                                //   Power hour: 2:00–4:00 PM ET (EOD positioning)
+
+    },
+};
+
+// ============================================================
+// CHART INIT
+// ============================================================
+const chartEl = document.getElementById('chart');
+
+const chart = LightweightCharts.createChart(chartEl, {
+    layout: { background: { color: '#0d1117' }, textColor: '#7d8590' },
+    grid:   { vertLines: { color: '#161b22' }, horzLines: { color: '#1c2128' } },
+    crosshair: {
+        mode: LightweightCharts.CrosshairMode.Normal,
+        vertLine: { color: '#30363d', labelBackgroundColor: '#21262d' },
+        horzLine: { color: '#30363d', labelBackgroundColor: '#21262d' },
+    },
+    rightPriceScale: { borderColor: '#30363d' },
+    timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false, rightOffset: 12 },
+    localization: {
+        // Display all times in Eastern Time (ET) to match ES futures session hours
+        timeFormatter: (unix) => {
+            return new Date(unix * 1000).toLocaleString('en-US', {
+                timeZone: 'America/New_York',
+                month:    '2-digit',
+                day:      '2-digit',
+                hour:     '2-digit',
+                minute:   '2-digit',
+                hour12:   false,
+            });
+        },
+    },
+});
+
+const candleSeries = chart.addCandlestickSeries({
+    upColor: '#3fb950', downColor: '#f85149',
+    borderUpColor: '#3fb950', borderDownColor: '#f85149',
+    wickUpColor: '#3fb950', wickDownColor: '#f85149',
+});
+
+// EMA line overlay
+const emaSeries = chart.addLineSeries({
+    color:             'rgba(88,166,255,0.5)',
+    lineWidth:         1,
+    priceLineVisible:  false,
+    lastValueVisible:  false,
+    crosshairMarkerVisible: false,
+});
+
+// VWAP line overlay (daily reset, gold/yellow)
+const vwapSeries = chart.addLineSeries({
+    color:             'rgba(210,170,0,0.7)',
+    lineWidth:         1,
+    lineStyle:         1, // dashed
+    priceLineVisible:  false,
+    lastValueVisible:  false,
+    crosshairMarkerVisible: false,
+});
+
+new ResizeObserver(() => {
+    chart.applyOptions({ width: chartEl.clientWidth, height: chartEl.clientHeight });
+}).observe(chartEl);
+
+// ============================================================
+// INDICATOR MATH
+// ============================================================
+
+// Wilder's ATR (matches Pine Script ta.atr)
+function calcATR(bars, period) {
+    const out = new Array(bars.length).fill(null);
+    if (bars.length < period) return out;
+    let sum = 0;
+    for (let i = 0; i < period; i++) {
+        sum += i === 0
+            ? bars[0].high - bars[0].low
+            : Math.max(bars[i].high - bars[i].low,
+                Math.abs(bars[i].high - bars[i-1].close),
+                Math.abs(bars[i].low  - bars[i-1].close));
+    }
+    out[period - 1] = sum / period;
+    for (let i = period; i < bars.length; i++) {
+        const tr = Math.max(bars[i].high - bars[i].low,
+            Math.abs(bars[i].high - bars[i-1].close),
+            Math.abs(bars[i].low  - bars[i-1].close));
+        out[i] = (out[i-1] * (period - 1) + tr) / period;
+    }
+    return out;
+}
+
+// Exponential Moving Average
+function calcEMA(bars, period) {
+    const out = new Array(bars.length).fill(null);
+    if (bars.length < period) return out;
+    const k = 2 / (period + 1);
+    let sum = 0;
+    for (let i = 0; i < period; i++) sum += bars[i].close;
+    out[period - 1] = sum / period;
+    for (let i = period; i < bars.length; i++) {
+        out[i] = bars[i].close * k + out[i-1] * (1 - k);
+    }
+    return out;
+}
+
+// Simple Moving Average (for volume and ATR baseline)
+function calcSMA(values, period) {
+    const out = new Array(values.length).fill(null);
+    for (let i = period - 1; i < values.length; i++) {
+        let s = 0;
+        for (let j = i - period + 1; j <= i; j++) s += (values[j] || 0);
+        out[i] = s / period;
+    }
+    return out;
+}
+
+// Pivot detection
+// ADX — Average Directional Index (Wilder, period=14)
+// Measures TREND STRENGTH regardless of direction.
+// ADX > 20 = trending, ADX < 20 = ranging/choppy (avoid)
+function calcADX(bars, period) {
+    const adx = new Array(bars.length).fill(null);
+    if (bars.length < period * 2 + 1) return adx;
+
+    const pDM = new Array(bars.length).fill(0);
+    const nDM = new Array(bars.length).fill(0);
+    const tr  = new Array(bars.length).fill(0);
+
+    for (let i = 1; i < bars.length; i++) {
+        const up   = bars[i].high - bars[i-1].high;
+        const down = bars[i-1].low - bars[i].low;
+        pDM[i] = up > down && up > 0 ? up : 0;
+        nDM[i] = down > up && down > 0 ? down : 0;
+        tr[i]  = Math.max(
+            bars[i].high - bars[i].low,
+            Math.abs(bars[i].high - bars[i-1].close),
+            Math.abs(bars[i].low  - bars[i-1].close));
+    }
+
+    // Wilder's initial smoothing
+    let sTR = 0, sPDM = 0, sNDM = 0;
+    for (let i = 1; i <= period; i++) { sTR += tr[i]; sPDM += pDM[i]; sNDM += nDM[i]; }
+
+    const dxArr = [];
+    for (let i = period; i < bars.length; i++) {
+        if (i > period) {
+            sTR  = sTR  - sTR/period  + tr[i];
+            sPDM = sPDM - sPDM/period + pDM[i];
+            sNDM = sNDM - sNDM/period + nDM[i];
+        }
+        const diP = sTR > 0 ? 100 * sPDM / sTR : 0;
+        const diN = sTR > 0 ? 100 * sNDM / sTR : 0;
+        const sum = diP + diN;
+        dxArr.push({ i, val: sum > 0 ? 100 * Math.abs(diP - diN) / sum : 0 });
+    }
+
+    if (dxArr.length < period) return adx;
+
+    // ADX = Wilder's smoothed DX
+    let adxVal = dxArr.slice(0, period).reduce((s, d) => s + d.val, 0) / period;
+    adx[dxArr[period - 1].i] = adxVal;
+    for (let k = period; k < dxArr.length; k++) {
+        adxVal = (adxVal * (period - 1) + dxArr[k].val) / period;
+        adx[dxArr[k].i] = adxVal;
+    }
+    return adx;
+}
+
+// VWAP — Volume Weighted Average Price, resets daily at 9:30 AM ET
+// Price above VWAP = buyers in control (bullish institutional bias)
+function calcVWAP(bars) {
+    const vwap = new Array(bars.length).fill(null);
+    let cumTPV = 0, cumVol = 0, lastDate = null;
+
+    for (let i = 0; i < bars.length; i++) {
+        const bar  = bars[i];
+        const date = new Date(bar.time * 1000).toLocaleDateString('en-US', { timeZone: 'America/New_York' });
+
+        if (date !== lastDate) { cumTPV = 0; cumVol = 0; lastDate = date; }
+
+        const tp  = (bar.high + bar.low + bar.close) / 3;
+        const vol = bar.volume || 1; // fallback to 1 so VWAP still computes without volume
+        cumTPV += tp * vol;
+        cumVol += vol;
+        vwap[i] = cumTPV / cumVol;
+    }
+    return vwap;
+}
+
+// Session hours: high-probability windows for ES follow-through
+// Opening: 9:30–11:30 AM ET  (directional momentum, highest volume)
+// Power hr: 2:00–4:00 PM ET  (end-of-day institutional positioning)
+function isSessionHour(unixSeconds) {
+    const et   = new Date(unixSeconds * 1000).toLocaleString('en-US',
+        { timeZone:'America/New_York', hour:'2-digit', minute:'2-digit', hour12:false });
+    const [h, m] = et.split(':').map(Number);
+    const mins = h * 60 + m;
+    return (mins >= 9*60+30 && mins < 11*60+30) ||
+           (mins >= 14*60  && mins < 16*60);
+}
+
+function isPivotHigh(bars, idx, L, R) {
+    if (idx - L < 0 || idx + R >= bars.length) return false;
+    const p = bars[idx].high;
+    for (let i = idx - L; i < idx;      i++) if (bars[i].high >= p) return false;
+    for (let i = idx + 1; i <= idx + R; i++) if (bars[i].high >= p) return false;
+    return true;
+}
+
+function isPivotLow(bars, idx, L, R) {
+    if (idx - L < 0 || idx + R >= bars.length) return false;
+    const p = bars[idx].low;
+    for (let i = idx - L; i < idx;      i++) if (bars[i].low <= p) return false;
+    for (let i = idx + 1; i <= idx + R; i++) if (bars[i].low <= p) return false;
+    return true;
+}
+
+// RTH check — 9:30 AM to 4:00 PM Eastern Time (handles DST)
+function isRTH(unixSeconds) {
+    const d = new Date(unixSeconds * 1000);
+    const et = d.toLocaleString('en-US', {
+        timeZone: 'America/New_York',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+    });
+    const [h, m] = et.split(':').map(Number);
+    const mins = h * 60 + m;
+    return mins >= 9 * 60 + 30 && mins < 16 * 60;
+}
+
+// ============================================================
+// STRATEGY RUNNER
+// ============================================================
+function runStrategy(bars) {
+    const { leftBars:L, rightBars:R,
+            retestTolerance, retestTimeout, stopBuffer, rrRatio,
+            filters: F } = CFG;
+
+    // Pre-compute indicators
+    const atr    = calcATR(bars, 14);
+    const atrAvg = calcSMA(atr, F.atrAvgLen);
+    const ema    = calcEMA(bars, F.emaLength);
+    const vols   = bars.map(b => b.volume || 0);
+    const volAvg = calcSMA(vols, F.volumeAvgLen);
+    const adxArr = calcADX(bars, F.adxLength);
+    const vwap   = calcVWAP(bars);
+
+    let prevHigh=null, lastHigh=null, prevLow=null, lastLow=null;
+    let setupActive=false, breakoutLevel=null, breakoutFired=false, lockedHL=null;
+    let retestActive=false, retestLevel=null, inZone=false, retestStart=-1, retestFired=false;
+
+    const markers=[], signals=[];
+    let hlCount=0, filteredCount=0;
+
+    for (let i = 0; i < bars.length; i++) {
+        const bar    = bars[i];
+        const pIdx   = i - R;
+        const atrVal = atr[i] || (bar.high - bar.low) || 1;
+
+        let newHigh=false, highPrice=null, newLow=false, lowPrice=null;
+
+        // ── Pivot detection (at confirmation bar i, pivot is at pIdx) ──
+        if (pIdx >= 0) {
+            if (isPivotHigh(bars, pIdx, L, R)) {
+                newHigh=true; highPrice=bars[pIdx].high;
+                prevHigh=lastHigh; lastHigh=highPrice;
+                markers.push({ time:bars[pIdx].time, position:'aboveBar',
+                    color:'rgba(248,81,73,0.45)', shape:'circle', size:0.4 });
+            }
+            if (isPivotLow(bars, pIdx, L, R)) {
+                newLow=true; lowPrice=bars[pIdx].low;
+                prevLow=lastLow; lastLow=lowPrice;
+                markers.push({ time:bars[pIdx].time, position:'belowBar',
+                    color:'rgba(0,200,200,0.45)', shape:'circle', size:0.4 });
+            }
+        }
+
+        const isHH = newHigh && prevHigh !== null && highPrice > prevHigh;
+
+        // ── Higher Low detection with Structure filter ──
+        // Structure filter: HL must be meaningfully higher — not just 1 tick
+        const structureOk = !F.minStructure ||
+            (prevLow !== null && lowPrice > prevLow + atrVal * F.structureMult);
+
+        const isHL = newLow && prevLow !== null && lowPrice > prevLow && structureOk;
+
+        if (isHL) {
+            hlCount++;
+            markers.push({ time:bars[pIdx].time, position:'belowBar',
+                color:'#00ff88', shape:'arrowUp', text:'HL', size:1 });
+            if (lastHigh !== null) {
+                setupActive=true; breakoutLevel=lastHigh;
+                breakoutFired=false; lockedHL=lowPrice;
+            }
+        }
+        if (isHH) {
+            markers.push({ time:bars[pIdx].time, position:'aboveBar',
+                color:'#ff6b6b', shape:'arrowDown', text:'HH', size:1 });
+        }
+
+        // ── Quality filters applied at the SIGNAL bar ──
+        const candleRange = bar.high - bar.low;
+        const closePos    = candleRange > 0 ? (bar.close - bar.low) / candleRange : 0.5;
+
+        const rthOk      = !F.rth          || isRTH(bar.time);
+        const emaOk      = !F.ema          || (ema[i] !== null && bar.close > ema[i]);
+        const closeOk    = !F.strongClose  || closePos >= F.closeThreshold;
+        const volumeOk   = !F.volume       || (volAvg[i] !== null && bar.volume > volAvg[i] * F.volumeMult);
+        const atrOk      = !F.minATR       || (atrAvg[i] !== null && atrVal >= atrAvg[i] * F.atrMinPct);
+        const adxOk      = !F.adx          || (adxArr[i] !== null && adxArr[i] >= F.adxThreshold);
+        const vwapOk     = !F.vwap         || (vwap[i] !== null && bar.close > vwap[i]);
+        const sessionOk  = !F.sessionHours || isSessionHour(bar.time);
+        const allFiltersOk = rthOk && emaOk && closeOk && volumeOk && atrOk && adxOk && vwapOk && sessionOk;
+
+        // ── Option A: Breakout ──
+        const isBreakout = setupActive && !breakoutFired && breakoutLevel !== null && bar.close > breakoutLevel;
+
+        if (isBreakout) {
+            breakoutFired=true; setupActive=false;
+
+            if (allFiltersOk) {
+                const stop=lockedHL - atrVal*stopBuffer;
+                const tp=bar.close + (bar.close - stop)*rrRatio;
+                markers.push({ time:bar.time, position:'belowBar',
+                    color:'#00ee00', shape:'arrowUp', text:'BUY BO', size:2 });
+                signals.push({
+                    type:'Breakout', time:bar.time, price:bar.close, stop, tp,
+                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk),
+                });
+            } else {
+                // Filtered out — show a faint grey marker so user can see what was skipped
+                filteredCount++;
+                markers.push({ time:bar.time, position:'belowBar',
+                    color:'rgba(120,120,120,0.35)', shape:'arrowUp', size:1 });
+            }
+
+            // Arm retest regardless of whether entry was filtered
+            retestActive=true; retestLevel=breakoutLevel;
+            inZone=false; retestStart=i; retestFired=false;
+        }
+
+        // ── Option B: Retest ──
+        if (retestActive) {
+            if (i - retestStart > retestTimeout)                                   retestActive=false;
+            else if (bar.close < retestLevel - atrVal)                             retestActive=false;
+            else if (!inZone && bar.low <= retestLevel + atrVal*retestTolerance)   inZone=true;
+        }
+
+        const isRetest = retestActive && inZone && !retestFired && bar.close > retestLevel;
+
+        if (isRetest) {
+            retestFired=true; retestActive=false;
+
+            if (allFiltersOk) {
+                const stop=lockedHL - atrVal*stopBuffer;
+                const tp=bar.close + (bar.close - stop)*rrRatio;
+                markers.push({ time:bar.time, position:'belowBar',
+                    color:'#00ccff', shape:'arrowUp', text:'BUY RT', size:2 });
+                signals.push({
+                    type:'Retest', time:bar.time, price:bar.close, stop, tp,
+                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk),
+                });
+            } else {
+                filteredCount++;
+                markers.push({ time:bar.time, position:'belowBar',
+                    color:'rgba(120,120,120,0.35)', shape:'arrowUp', size:1 });
+            }
+        }
+    }
+
+    markers.sort((a,b) => a.time > b.time ? 1 : a.time < b.time ? -1 : 0);
+
+    // Return EMA and VWAP data for chart plotting
+    const emaLine = ema
+        .map((v, i) => v !== null ? { time: bars[i].time, value: v } : null)
+        .filter(Boolean);
+
+    const vwapLine = vwap
+        .map((v, i) => v !== null ? { time: bars[i].time, value: v } : null)
+        .filter(Boolean);
+
+    return { markers, signals, hlCount, filteredCount, emaLine, vwapLine };
+}
+
+// Build a list of which filters passed (for signal tooltip)
+function buildTags(rth, ema, close, vol, atr, adx, vwap, session) {
+    const tags = [];
+    if (CFG.filters.rth          && rth)    tags.push('RTH');
+    if (CFG.filters.ema          && ema)    tags.push('EMA');
+    if (CFG.filters.strongClose  && close)  tags.push('Close');
+    if (CFG.filters.volume       && vol)    tags.push('Vol');
+    if (CFG.filters.minATR       && atr)    tags.push('ATR');
+    if (CFG.filters.adx          && adx)    tags.push('ADX');
+    if (CFG.filters.vwap         && vwap)   tags.push('VWAP');
+    if (CFG.filters.sessionHours && session)tags.push('Session');
+    return tags;
+}
+
+// ============================================================
+// DATA FETCHING — Yahoo Finance ES=F
+// ============================================================
+function fetchWithTimeout(url, ms) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(t));
+}
+
+async function fetchData() {
+    const yf1 = 'https://query1.finance.yahoo.com/v8/finance/chart/ES=F?interval=15m&range=5d&includePrePost=false';
+    const yf2 = 'https://query2.finance.yahoo.com/v8/finance/chart/ES=F?interval=15m&range=5d&includePrePost=false';
+
+    const attempts = [
+        { url: yf1,                                                             ms: 8000 },
+        { url: yf2,                                                             ms: 8000 },
+        { url: 'https://corsproxy.io/?' + encodeURIComponent(yf1),             ms: 20000 },
+        { url: 'https://corsproxy.io/?' + encodeURIComponent(yf2),             ms: 20000 },
+        { url: 'https://api.allorigins.win/raw?url=' + encodeURIComponent(yf1), ms: 20000 },
+        { url: 'https://thingproxy.freeboard.io/fetch/' + yf1,                 ms: 20000 },
+    ];
+
+    const errors = [];
+    for (const { url, ms } of attempts) {
+        try {
+            const r = await fetchWithTimeout(url, ms);
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return parseYF(await r.json());
+        } catch (e) { errors.push(e.message); }
+    }
+    throw new Error('All sources failed. Open via start.bat.\n\n' + errors.join(' | '));
+}
+
+function parseYF(json) {
+    const res = json?.chart?.result?.[0];
+    if (!res) throw new Error('No result in response');
+    const ts = res.timestamp;
+    const q  = res.indicators.quote[0];
+    const last = res.meta?.regularMarketPrice ?? null;
+    const bars = [];
+    for (let i = 0; i < ts.length; i++) {
+        if (q.open[i] == null || q.close[i] == null) continue;
+        bars.push({
+            time:   ts[i],
+            open:   q.open[i],
+            high:   q.high[i],
+            low:    q.low[i],
+            close:  q.close[i],
+            volume: q.volume[i] || 0,
+        });
+    }
+    if (!bars.length) throw new Error('No valid candles in response');
+    return { bars, last };
+}
+
+// ============================================================
+// 1-HOUR DATA FETCH & HTF EMA COMPUTATION
+// ============================================================
+let _htf1h = []; // { time, aboveEMA } sorted ascending — populated each refresh
+
+async function fetch1hData() {
+    const yf1 = 'https://query1.finance.yahoo.com/v8/finance/chart/ES=F?interval=1h&range=60d&includePrePost=false';
+    const yf2 = 'https://query2.finance.yahoo.com/v8/finance/chart/ES=F?interval=1h&range=60d&includePrePost=false';
+    const attempts = [
+        { url: yf1,                                                              ms: 8000 },
+        { url: yf2,                                                              ms: 8000 },
+        { url: 'https://corsproxy.io/?' + encodeURIComponent(yf1),              ms: 20000 },
+        { url: 'https://api.allorigins.win/raw?url=' + encodeURIComponent(yf1), ms: 20000 },
+    ];
+    for (const { url, ms } of attempts) {
+        try {
+            const r = await fetchWithTimeout(url, ms);
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return parseYF(await r.json());
+        } catch (e) { /* try next */ }
+    }
+    return null; // fail silently — HTF filter will pass-through
+}
+
+function build1hEma(bars, period) {
+    if (!bars || !bars.length) return [];
+    const ema = calcEMA(bars, period);
+    return bars.map((b, i) => ({
+        time:     b.time,
+        aboveEMA: ema[i] !== null && b.close > ema[i],
+    }));
+}
+
+// Given a 15m bar's unix time, return whether the latest confirmed 1H bar is above its EMA.
+// Uses a pointer (htf1hPtr) that advances forward — call in ascending time order.
+let _htf1hPtr = 0;
+function htfBullishAt(time) {
+    if (!_htf1h.length) return true; // no data → pass-through
+    while (_htf1hPtr + 1 < _htf1h.length && _htf1h[_htf1hPtr + 1].time <= time) _htf1hPtr++;
+    return _htf1h[_htf1hPtr].aboveEMA;
+}
+
+function updateHTFBadge() {
+    const el = document.getElementById('htf-badge');
+    if (!el) return;
+    if (!_htf1h.length) { el.textContent = '1H: --'; el.style.color = '#7d8590'; return; }
+    const last = _htf1h[_htf1h.length - 1];
+    if (last.aboveEMA) {
+        el.textContent = '1H: BULL'; el.style.color = '#3fb950';
+    } else {
+        el.textContent = '1H: BEAR'; el.style.color = '#f85149';
+    }
+}
+
+// ============================================================
+// SIGNAL ALERTS
+// ============================================================
+let alertsEnabled = false;
+const alertedSignals = new Set(); // tracks "type:time" keys already alerted
+
+function toggleAlerts() {
+    if (!alertsEnabled) {
+        // Request notification permission first
+        if ('Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission().then(p => {
+                if (p === 'granted') enableAlerts();
+                else showAlertDenied();
+            });
+        } else if ('Notification' in window && Notification.permission === 'denied') {
+            showAlertDenied();
+        } else {
+            enableAlerts();
+        }
+    } else {
+        alertsEnabled = false;
+        const btn = document.getElementById('alert-btn');
+        btn.textContent = '\uD83D\uDD14 Alerts: OFF';
+        btn.className = 'btn';
+    }
+}
+
+function enableAlerts() {
+    alertsEnabled = true;
+    const btn = document.getElementById('alert-btn');
+    btn.textContent = '\uD83D\uDD14 Alerts: ON';
+    btn.className = 'btn alert-on';
+    // Seed existing signals so we don't alert on history
+    if (_lastBars) {
+        const { signals } = runStrategy(_lastBars);
+        signals.forEach(s => alertedSignals.add(s.type + ':' + s.time));
+    }
+}
+
+function showAlertDenied() {
+    alert('Browser notifications are blocked.\n\nTo enable: click the lock icon in the address bar → Notifications → Allow, then try again.');
+}
+
+// Plays a short two-tone chime using Web Audio API (no file needed)
+function playAlertSound(type) {
+    try {
+        const ctx  = new (window.AudioContext || window.webkitAudioContext)();
+        const freq1 = type === 'Breakout' ? 880 : 660;
+        const freq2 = type === 'Breakout' ? 1100 : 880;
+
+        [[freq1, 0, 0.12], [freq2, 0.13, 0.12]].forEach(([freq, start, dur]) => {
+            const osc  = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain); gain.connect(ctx.destination);
+            osc.type = 'sine';
+            osc.frequency.value = freq;
+            gain.gain.setValueAtTime(0, ctx.currentTime + start);
+            gain.gain.linearRampToValueAtTime(0.25, ctx.currentTime + start + 0.02);
+            gain.gain.linearRampToValueAtTime(0, ctx.currentTime + start + dur);
+            osc.start(ctx.currentTime + start);
+            osc.stop(ctx.currentTime + start + dur + 0.05);
+        });
+    } catch (e) { /* audio blocked — silent fail */ }
+}
+
+function fireAlerts(signals) {
+    if (!alertsEnabled) return;
+    signals.forEach(s => {
+        const key = s.type + ':' + s.time;
+        if (alertedSignals.has(key)) return;
+        alertedSignals.add(key);
+
+        // Browser notification
+        if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification(s.type === 'Breakout' ? '🟢 BUY BREAKOUT — ES 15m' : '🔵 BUY RETEST — ES 15m', {
+                body: `Price: ${s.price.toFixed(2)}  |  SL: ${s.stop.toFixed(2)}  |  TP: ${s.tp.toFixed(2)}`,
+                tag:  key,
+                requireInteraction: false,
+            });
+        }
+
+        // Audio chime
+        playAlertSound(s.type);
+    });
+}
+
+// ============================================================
+// COUNTDOWN RING
+// ============================================================
+const REFRESH_SECONDS = 5 * 60;
+const CIRCUMFERENCE   = 2 * Math.PI * 11; // 69.12
+const ringEl   = document.getElementById('ring-fill');
+const countEl  = document.getElementById('countdown-text');
+let secondsLeft    = REFRESH_SECONDS;
+let countdownTimer = null;
+
+function startCountdown() {
+    secondsLeft = REFRESH_SECONDS;
+    if (countdownTimer) clearInterval(countdownTimer);
+    countdownTimer = setInterval(() => {
+        secondsLeft--;
+        const progress = secondsLeft / REFRESH_SECONDS;
+        ringEl.style.strokeDashoffset = CIRCUMFERENCE * (1 - progress);
+        ringEl.style.stroke = secondsLeft <= 20 ? '#f85149' : secondsLeft <= 60 ? '#d29922' : '#3fb950';
+        const m = Math.floor(secondsLeft / 60);
+        const s = secondsLeft % 60;
+        countEl.textContent = `${m}:${s.toString().padStart(2,'0')}`;
+        if (secondsLeft <= 0) loadData();
+    }, 1000);
+}
+
+// ============================================================
+// UI HELPERS
+// ============================================================
+function f(n, d=2) { return n != null ? Number(n).toFixed(d) : '--'; }
+
+function fmtTime(unix) {
+    return new Date(unix * 1000).toLocaleString('en-US', {
+        timeZone: 'America/New_York',
+        month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hour12:false,
+    });
+}
+
+function showOverlay(id) {
+    document.getElementById('overlay-loading').style.display = id === 'loading' ? 'flex' : 'none';
+    document.getElementById('overlay-error').style.display   = id === 'error'   ? 'flex' : 'none';
+}
+
+function flashRefresh() {
+    const el = document.getElementById('refresh-flash');
+    el.style.opacity = '1';
+    setTimeout(() => { el.style.opacity = '0'; }, 400);
+}
+
+function renderSignals(signals) {
+    const list = document.getElementById('signals-list');
+    document.getElementById('sig-count').textContent = signals.length + ' passed';
+
+    if (!signals.length) {
+        list.innerHTML = '<div class="sig-empty">No signals passed all filters in this window.<br><br>Try turning off individual filters above to see more.</div>';
+        return;
+    }
+
+    list.innerHTML = [...signals].reverse().map(s => `
+        <div class="sig-item">
+            <div class="sig-row">
+                <span class="sig-type ${s.type === 'Breakout' ? 'bo' : 'rt'}">${s.type}</span>
+                <span class="sig-time">${fmtTime(s.time)}</span>
+            </div>
+            <div class="sig-row">
+                <span class="sig-price">${f(s.price)}</span>
+                <div class="sig-levels">
+                    <span class="c-red">SL ${f(s.stop)}</span>
+                    <span class="c-green">TP ${f(s.tp)}</span>
+                </div>
+            </div>
+            ${s.tags.length ? `<div class="sig-tags">${s.tags.map(t => `<span class="sig-tag">${t}</span>`).join('')}</div>` : ''}
+        </div>
+    `).join('');
+}
+
+function updateFilterCount() {
+    const F = CFG.filters;
+    const active = [F.rth, F.ema, F.strongClose, F.volume, F.minStructure, F.minATR, F.adx, F.vwap, F.sessionHours].filter(Boolean).length;
+    const el = document.getElementById('filter-count');
+    el.textContent = `${active} / 9 on`;
+    el.className = active === 9 ? 'c-green' : active >= 5 ? 'c-yellow' : 'c-red';
+}
+
+// ============================================================
+// FILTER TOGGLE — re-runs strategy on existing bars (no refetch)
+// ============================================================
+let _lastBars = null;
+let _lastPrice = null;
+
+function toggleFilter(key) {
+    CFG.filters[key] = !CFG.filters[key];
+
+    // Update button appearance
+    const idMap = {
+        rth:'fb-rth', ema:'fb-ema', strongClose:'fb-close',
+        volume:'fb-volume', minStructure:'fb-structure', minATR:'fb-atr',
+        adx:'fb-adx', vwap:'fb-vwap', sessionHours:'fb-session',
+    };
+    const btn = document.getElementById(idMap[key]);
+    if (btn) btn.className = 'f-btn ' + (CFG.filters[key] ? 'on' : '');
+
+    updateFilterCount();
+
+    // Re-run strategy instantly on cached bars
+    if (_lastBars) applyStrategy(_lastBars, _lastPrice, false);
+}
+
+// ============================================================
+// APPLY STRATEGY + RENDER
+// ============================================================
+function applyStrategy(bars, lastPrice, fitContent) {
+    const { markers, signals, hlCount, filteredCount, emaLine, vwapLine } = runStrategy(bars);
+
+    candleSeries.setData(bars);
+    candleSeries.setMarkers(markers);
+    emaSeries.setData(CFG.filters.ema ? emaLine : []);
+    vwapSeries.setData(CFG.filters.vwap ? vwapLine : []);
+
+    if (fitContent) chart.timeScale().fitContent();
+
+    const price = lastPrice ?? bars.at(-1)?.close;
+    document.getElementById('last-price').textContent = f(price, 2);
+
+    const bo = signals.filter(s => s.type === 'Breakout').length;
+    const rt = signals.filter(s => s.type === 'Retest').length;
+    document.getElementById('s-total').textContent    = signals.length;
+    document.getElementById('s-filtered').textContent = filteredCount;
+    document.getElementById('s-bo').textContent       = bo;
+    document.getElementById('s-rt').textContent       = rt;
+    document.getElementById('hl-count').textContent   = `HL Setups: ${hlCount}`;
+
+    renderSignals(signals);
+    if (!fitContent) fireAlerts(signals); // only alert on auto-refresh, not initial load
+}
+
+// ============================================================
+// MAIN LOAD
+// ============================================================
+let isFirstLoad = true;
+
+async function loadData() {
+    if (isFirstLoad) showOverlay('loading');
+    document.getElementById('status-dot').className = 'status-dot dot-loading';
+    document.getElementById('loading-msg').textContent = isFirstLoad ? 'Fetching 15-minute OHLCV data...' : 'Refreshing...';
+
+    try {
+        const { bars, last } = await fetchData();
+        _lastBars  = bars;
+        _lastPrice = last;
+
+        applyStrategy(bars, last, isFirstLoad);
+
+        if (isFirstLoad) { isFirstLoad = false; }
+
+        showOverlay(null);
+        document.getElementById('status-dot').className = 'status-dot dot-live';
+        document.getElementById('last-update').textContent =
+            'Updated ' + new Date().toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit' });
+
+        flashRefresh();
+        startCountdown();
+
+    } catch (err) {
+        console.error(err);
+        document.getElementById('error-msg').textContent = err.message;
+        showOverlay('error');
+        document.getElementById('status-dot').className = 'status-dot dot-error';
+    }
+}
+
+function manualRefresh() {
+    if (countdownTimer) clearInterval(countdownTimer);
+    loadData();
+}
+
+// ============================================================
+// BOOT
+// ============================================================
+updateFilterCount();
+loadData();
+
+// ============================================================
+// BACKTEST ENGINE
+// ============================================================
+
+// Fetch 60 days of 15m data (more history than the live view)
+async function fetchBacktestData() {
+    const urls = [
+        'https://query1.finance.yahoo.com/v8/finance/chart/ES=F?interval=15m&range=60d&includePrePost=false',
+        'https://query2.finance.yahoo.com/v8/finance/chart/ES=F?interval=15m&range=60d&includePrePost=false',
+        'https://query1.finance.yahoo.com/v8/finance/chart/ES=F?interval=15m&range=30d&includePrePost=false',
+    ];
+
+    const proxies = [
+        u => u,
+        u => 'https://corsproxy.io/?' + encodeURIComponent(u),
+        u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+    ];
+
+    const errors = [];
+    for (const base of urls) {
+        for (const wrap of proxies) {
+            try {
+                const r = await fetchWithTimeout(wrap(base), 25000);
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                const data = parseYF(await r.json());
+                if (data.bars.length > 100) return data; // enough bars to backtest
+            } catch (e) { errors.push(e.message); }
+        }
+    }
+    throw new Error('Could not fetch backtest data.\n' + errors.slice(0,3).join(' | '));
+}
+
+// Simulate trades from strategy signals
+function runBacktest(bars) {
+    const { signals } = runStrategy(bars);
+    const trades = [];
+
+    for (const sig of signals) {
+        const sigIdx = bars.findIndex(b => b.time === sig.time);
+        if (sigIdx < 0 || sigIdx + 1 >= bars.length) continue;
+
+        const entryBar   = bars[sigIdx + 1];
+        const entry      = entryBar.open;
+        const stop       = sig.stop;
+        const riskPts    = entry - stop;
+        if (riskPts <= 0) continue;
+
+        const tp         = entry + riskPts * CFG.rrRatio;
+        const MAX_BARS   = 25;
+
+        let exitPrice = null, exitTime = null, result = null;
+
+        for (let j = sigIdx + 1; j < Math.min(sigIdx + 1 + MAX_BARS, bars.length); j++) {
+            const b = bars[j];
+            // Check SL first (conservative — assumes worst case in same bar)
+            if (b.low <= stop) {
+                exitPrice = stop; exitTime = b.time; result = 'loss'; break;
+            }
+            if (b.high >= tp) {
+                exitPrice = tp; exitTime = b.time; result = 'win'; break;
+            }
+        }
+
+        // Timeout — close at last bar close
+        if (!result) {
+            const last = bars[Math.min(sigIdx + MAX_BARS, bars.length - 1)];
+            exitPrice = last.close;
+            exitTime  = last.time;
+            result    = exitPrice >= entry ? 'win' : 'loss';
+        }
+
+        const pnlR = (exitPrice - entry) / riskPts;
+
+        trades.push({
+            type: sig.type, entryTime: entryBar.time, exitTime,
+            entry, exit: exitPrice, stop, tp, result, pnlR,
+        });
+    }
+    return trades;
+}
+
+// Calculate summary metrics
+function calcMetrics(trades) {
+    if (!trades.length) return null;
+    const wins   = trades.filter(t => t.result === 'win');
+    const losses = trades.filter(t => t.result === 'loss');
+    const grossW = wins.reduce((s, t) => s + t.pnlR, 0);
+    const grossL = Math.abs(losses.reduce((s, t) => s + t.pnlR, 0));
+    const totalR = trades.reduce((s, t) => s + t.pnlR, 0);
+
+    // Max drawdown in R
+    let peak = 0, maxDD = 0, cumR = 0;
+    for (const t of trades) {
+        cumR += t.pnlR;
+        if (cumR > peak) peak = cumR;
+        maxDD = Math.max(maxDD, peak - cumR);
+    }
+
+    return {
+        total:    trades.length,
+        wins:     wins.length,
+        losses:   losses.length,
+        winRate:  (wins.length / trades.length * 100).toFixed(1),
+        avgWinR:  wins.length   ? (grossW / wins.length).toFixed(2)   : '0.00',
+        avgLossR: losses.length ? (grossL / losses.length).toFixed(2) : '0.00',
+        pf:       grossL > 0    ? (grossW / grossL).toFixed(2)        : grossW > 0 ? '∞' : '0.00',
+        totalR:   totalR.toFixed(2),
+        maxDD:    maxDD.toFixed(2),
+    };
+}
+
+// Build cumulative R curve for the equity chart
+// Uses a Map to deduplicate timestamps — LW Charts requires strictly unique, ascending times
+function buildCurve(trades) {
+    let cum = 0;
+    const map = new Map();
+    map.set(trades[0].entryTime, 0); // origin point
+    for (const t of trades) {
+        cum += t.pnlR;
+        map.set(t.exitTime, parseFloat(cum.toFixed(3))); // last write wins for same timestamp
+    }
+    return [...map.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([time, value]) => ({ time, value }));
+}
+
+// ── Backtest overlay state ──
+let btChart = null, btLineSeries = null, _btTrades = null;
+
+function getDollarRisk() {
+    const account = parseFloat(document.getElementById('bt-account')?.value) || 10000;
+    const riskPct = parseFloat(document.getElementById('bt-risk')?.value)    || 1;
+    return account * (riskPct / 100);
+}
+
+function fmtDollar(val) {
+    const sign = val >= 0 ? '+' : '';
+    return sign + '$' + Math.abs(val).toLocaleString('en-US', { minimumFractionDigits:0, maximumFractionDigits:0 });
+}
+
+function recalcDollar() {
+    if (!_btTrades || !_btTrades.length) return;
+    const oneR = getDollarRisk();
+    const bar  = document.getElementById('bt-dollar-bar');
+    bar.style.display = 'flex';
+
+    const totalR = _btTrades.reduce((s, t) => s + t.pnlR, 0);
+    const netDollar = totalR * oneR;
+
+    // Max drawdown in dollars
+    let peak = 0, maxDD = 0, cumR = 0;
+    for (const t of _btTrades) {
+        cumR += t.pnlR; if (cumR > peak) peak = cumR;
+        maxDD = Math.max(maxDD, peak - cumR);
+    }
+
+    const pnlRs    = _btTrades.map(t => t.pnlR);
+    const bestR    = Math.max(...pnlRs);
+    const worstR   = Math.min(...pnlRs);
+
+    const netEl = document.getElementById('bt-net-dollar');
+    netEl.textContent = fmtDollar(netDollar);
+    netEl.style.color = netDollar >= 0 ? '#3fb950' : '#f85149';
+
+    document.getElementById('bt-1r').textContent       = '$' + oneR.toFixed(0);
+    document.getElementById('bt-dd-dollar').textContent  = '-$' + (maxDD * oneR).toFixed(0);
+    document.getElementById('bt-best-dollar').textContent  = fmtDollar(bestR * oneR);
+    document.getElementById('bt-worst-dollar').textContent = fmtDollar(worstR * oneR);
+
+    // Re-render trade log with updated dollar column
+    renderBTLog(_btTrades);
+}
+
+function openBacktest() {
+    const overlay = document.getElementById('bt-overlay');
+    overlay.style.display = 'flex';
+    document.getElementById('bt-status').textContent  = 'Fetching 60 days of data...';
+    document.getElementById('bt-metrics').innerHTML   = '';
+    document.getElementById('bt-log-body').innerHTML  = '';
+    document.getElementById('bt-chart-wrap').style.display  = 'none';
+    document.getElementById('bt-dollar-bar').style.display  = 'none';
+    _btTrades = null;
+
+    fetchBacktestData().then(({ bars }) => {
+        const trades  = runBacktest(bars);
+        const metrics = calcMetrics(trades);
+
+        if (!trades.length || !metrics) {
+            document.getElementById('bt-status').textContent = 'No trades found. Try disabling some filters.';
+            return;
+        }
+
+        document.getElementById('bt-status').textContent = '';
+        _btTrades = trades;
+        renderBTMetrics(metrics);
+        renderBTChart(trades);
+        recalcDollar();
+
+    }).catch(err => {
+        document.getElementById('bt-status').textContent = 'Error: ' + err.message;
+    });
+}
+
+function closeBacktest() {
+    document.getElementById('bt-overlay').style.display = 'none';
+    if (btChart) { btChart.remove(); btChart = null; btLineSeries = null; }
+}
+
+function renderBTMetrics(m) {
+    const wr   = parseFloat(m.winRate);
+    const pf   = parseFloat(m.pf);
+    const totalR = parseFloat(m.totalR);
+    const wrColor  = wr  >= 50 ? '#3fb950' : '#f85149';
+    const pfColor  = pf  >= 1  ? '#3fb950' : '#f85149';
+    const rColor   = totalR >= 0 ? '#3fb950' : '#f85149';
+
+    document.getElementById('bt-metrics').innerHTML = `
+        <div class="bt-stat"><div class="bt-stat-label">Total Trades</div><div class="bt-stat-val">${m.total}</div></div>
+        <div class="bt-stat"><div class="bt-stat-label">Win Rate</div><div class="bt-stat-val" style="color:${wrColor}">${m.winRate}%</div></div>
+        <div class="bt-stat"><div class="bt-stat-label">Profit Factor</div><div class="bt-stat-val" style="color:${pfColor}">${m.pf}</div></div>
+        <div class="bt-stat"><div class="bt-stat-label">Total R</div><div class="bt-stat-val" style="color:${rColor}">${totalR >= 0 ? '+' : ''}${m.totalR}R</div></div>
+        <div class="bt-stat"><div class="bt-stat-label">Avg Win</div><div class="bt-stat-val c-green">+${m.avgWinR}R</div></div>
+        <div class="bt-stat"><div class="bt-stat-label">Avg Loss</div><div class="bt-stat-val c-red">-${m.avgLossR}R</div></div>
+        <div class="bt-stat"><div class="bt-stat-label">Max Drawdown</div><div class="bt-stat-val c-red">-${m.maxDD}R</div></div>
+        <div class="bt-stat"><div class="bt-stat-label">Wins / Losses</div><div class="bt-stat-val">${m.wins} / ${m.losses}</div></div>
+    `;
+}
+
+function renderBTChart(trades) {
+    const wrap = document.getElementById('bt-chart-wrap');
+    wrap.style.display = 'block';
+
+    if (!btChart) {
+        btChart = LightweightCharts.createChart(document.getElementById('bt-chart'), {
+            layout: { background: { color: '#0d1117' }, textColor: '#7d8590' },
+            grid:   { vertLines: { color: '#161b22' }, horzLines: { color: '#1c2128' } },
+            rightPriceScale: { borderColor: '#30363d' },
+            timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
+            crosshair: {
+                vertLine: { color: '#30363d', labelBackgroundColor: '#21262d' },
+                horzLine: { color: '#30363d', labelBackgroundColor: '#21262d' },
+            },
+            localization: {
+                timeFormatter: (unix) => new Date(unix * 1000).toLocaleString('en-US', {
+                    timeZone:'America/New_York', month:'2-digit', day:'2-digit',
+                    hour:'2-digit', minute:'2-digit', hour12:false,
+                }),
+                priceFormatter: (p) => p.toFixed(2) + 'R',
+            },
+        });
+
+        btLineSeries = btChart.addLineSeries({
+            color: '#3fb950', lineWidth: 2,
+            priceLineVisible: false, lastValueVisible: true,
+        });
+
+        // Zero line
+        btChart.addLineSeries({
+            color: 'rgba(255,255,255,0.1)', lineWidth: 1,
+            priceLineVisible: false, lastValueVisible: false,
+            crosshairMarkerVisible: false,
+        }).setData([ { time: trades[0].entryTime, value: 0 }, { time: trades.at(-1).exitTime, value: 0 } ]);
+    }
+
+    const curve = buildCurve(trades);
+    // Colour the line red when below zero
+    const totalR = parseFloat(curve.at(-1).value);
+    btLineSeries.applyOptions({ color: totalR >= 0 ? '#3fb950' : '#f85149' });
+    btLineSeries.setData(curve);
+    btChart.applyOptions({ width: document.getElementById('bt-chart').clientWidth, height: 220 });
+    btChart.timeScale().fitContent();
+}
+
+function renderBTLog(trades) {
+    const oneR = getDollarRisk();
+    document.getElementById('bt-log-body').innerHTML = [...trades].reverse().map((t, i) => {
+        const dollarPnl = t.pnlR * oneR;
+        const color = t.result === 'win' ? '#3fb950' : '#f85149';
+        return `
+        <tr class="${t.result === 'win' ? 'tr-win' : 'tr-loss'}">
+            <td>${trades.length - i}</td>
+            <td><span class="sig-type ${t.type === 'Breakout' ? 'bo' : 'rt'}" style="font-size:10px;padding:1px 5px;">${t.type === 'Breakout' ? 'BO' : 'RT'}</span></td>
+            <td>${fmtTime(t.entryTime)}</td>
+            <td>${f(t.entry)}</td>
+            <td>${f(t.exit)}</td>
+            <td class="c-red">${f(t.stop)}</td>
+            <td class="c-green">${f(t.tp)}</td>
+            <td style="color:${color};font-weight:700">${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(2)}R</td>
+            <td style="color:${color};font-weight:700">${fmtDollar(dollarPnl)}</td>
+            <td style="color:${color}">${t.result === 'win' ? 'WIN' : 'LOSS'}</td>
+        </tr>`;
+    }).join('');
+}
+</script>
+
+<!-- ═══════════════════════════════════════════════════════════
+     BACKTEST OVERLAY
+═══════════════════════════════════════════════════════════ -->
+<div id="bt-overlay" style="display:none;position:fixed;inset:0;background:#0d1117;z-index:200;flex-direction:column;overflow:hidden;">
+
+    <!-- Header -->
+    <div style="display:flex;align-items:center;gap:12px;padding:10px 16px;background:#161b22;border-bottom:1px solid #30363d;flex-shrink:0;flex-wrap:wrap;">
+        <button onclick="closeBacktest()" class="btn" style="padding:4px 10px;">&#8592; Live</button>
+        <span style="font-size:14px;font-weight:700;">Backtest Results</span>
+        <span style="font-size:11px;color:#7d8590;">ES Futures 15m &mdash; Last 60 Days &mdash; Filters Applied</span>
+        <div style="display:flex;align-items:center;gap:8px;margin-left:auto;">
+            <label style="font-size:11px;color:#7d8590;">Account</label>
+            <input id="bt-account" type="number" value="10000" min="1000" step="1000"
+                style="width:90px;background:#21262d;border:1px solid #30363d;color:#e6edf3;
+                       border-radius:5px;padding:3px 7px;font-size:12px;font-family:inherit;"
+                oninput="recalcDollar()">
+            <label style="font-size:11px;color:#7d8590;">Risk %</label>
+            <input id="bt-risk" type="number" value="1" min="0.1" max="10" step="0.1"
+                style="width:60px;background:#21262d;border:1px solid #30363d;color:#e6edf3;
+                       border-radius:5px;padding:3px 7px;font-size:12px;font-family:inherit;"
+                oninput="recalcDollar()">
+        </div>
+        <div id="bt-status" style="color:#d29922;font-size:12px;"></div>
+    </div>
+
+    <!-- Metrics grid -->
+    <div id="bt-metrics" style="display:grid;grid-template-columns:repeat(8,1fr);gap:1px;background:#21262d;border-bottom:1px solid #30363d;flex-shrink:0;"></div>
+
+    <!-- Dollar P&L summary bar -->
+    <div id="bt-dollar-bar" style="display:none;padding:8px 16px;background:#161b22;border-bottom:1px solid #30363d;flex-shrink:0;display:none;align-items:center;gap:24px;flex-wrap:wrap;">
+        <span style="font-size:11px;color:#7d8590;text-transform:uppercase;letter-spacing:.06em;">Dollar P&amp;L</span>
+        <span style="font-size:11px;color:#7d8590;">1R&nbsp;=&nbsp;<span id="bt-1r" style="color:#e6edf3;font-weight:700;"></span></span>
+        <span style="font-size:13px;font-weight:700;">Net:&nbsp;<span id="bt-net-dollar"></span></span>
+        <span style="font-size:11px;color:#7d8590;">Max DD:&nbsp;<span id="bt-dd-dollar" class="c-red"></span></span>
+        <span style="font-size:11px;color:#7d8590;">Best trade:&nbsp;<span id="bt-best-dollar" class="c-green"></span></span>
+        <span style="font-size:11px;color:#7d8590;">Worst trade:&nbsp;<span id="bt-worst-dollar" class="c-red"></span></span>
+        <span style="font-size:11px;color:#7d8590;font-style:italic;">* fixed fractional, no compounding</span>
+    </div>
+
+    <!-- Equity curve -->
+    <div id="bt-chart-wrap" style="display:none;padding:12px 16px 0;flex-shrink:0;">
+        <div style="font-size:10px;color:#7d8590;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">Equity Curve (R)</div>
+        <div id="bt-chart" style="width:100%;height:220px;"></div>
+    </div>
+
+    <!-- Trade log -->
+    <div style="flex:1;overflow-y:auto;padding:12px 16px;">
+        <div style="font-size:10px;color:#7d8590;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Trade Log</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead>
+                <tr style="color:#7d8590;font-size:10px;text-transform:uppercase;letter-spacing:.05em;">
+                    <th style="padding:4px 8px;text-align:left;border-bottom:1px solid #30363d;">#</th>
+                    <th style="padding:4px 8px;text-align:left;border-bottom:1px solid #30363d;">Type</th>
+                    <th style="padding:4px 8px;text-align:left;border-bottom:1px solid #30363d;">Entry Time</th>
+                    <th style="padding:4px 8px;text-align:right;border-bottom:1px solid #30363d;">Entry</th>
+                    <th style="padding:4px 8px;text-align:right;border-bottom:1px solid #30363d;">Exit</th>
+                    <th style="padding:4px 8px;text-align:right;border-bottom:1px solid #30363d;">SL</th>
+                    <th style="padding:4px 8px;text-align:right;border-bottom:1px solid #30363d;">TP</th>
+                    <th style="padding:4px 8px;text-align:right;border-bottom:1px solid #30363d;">R</th>
+                    <th style="padding:4px 8px;text-align:right;border-bottom:1px solid #30363d;">$</th>
+                    <th style="padding:4px 8px;text-align:left;border-bottom:1px solid #30363d;">Result</th>
+                </tr>
+            </thead>
+            <tbody id="bt-log-body"></tbody>
+        </table>
+    </div>
+</div>
+
+<style>
+.bt-stat {
+    background: #161b22; padding: 10px 12px;
+}
+.bt-stat-label {
+    font-size: 10px; color: #7d8590;
+    text-transform: uppercase; letter-spacing: .06em; margin-bottom: 3px;
+}
+.bt-stat-val {
+    font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+#bt-log-body tr { border-bottom: 1px solid #1c2128; }
+#bt-log-body tr:hover { background: #1c2128; }
+#bt-log-body td { padding: 6px 8px; font-variant-numeric: tabular-nums; }
+#bt-log-body td:nth-child(n+4) { text-align: right; }
+.tr-win  td:first-child { border-left: 2px solid #3fb950; }
+.tr-loss td:first-child { border-left: 2px solid #f85149; }
+</style>
+</body>
+</html>
