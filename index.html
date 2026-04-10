@@ -268,6 +268,7 @@ body {
     #topbar { gap: 7px; padding: 5px 10px; flex-wrap: nowrap; overflow-x: auto; }
     #topbar h1 { font-size: 11px; white-space: nowrap; }
     #topbar .badge { display: none; }
+    #refresh-btn { display: none; }
     .price-display { font-size: 16px; }
     #countdown-wrap { display: none; }
     #alert-btn { font-size: 11px; padding: 4px 8px; }
@@ -341,6 +342,8 @@ body {
         <button id="btn-spy" onclick="switchInstrument('SPY')"
             style="padding:3px 10px;border-radius:5px;border:none;cursor:pointer;font-size:11px;font-weight:700;font-family:inherit;background:transparent;color:#7d8590;">SPY</button>
     </div>
+    <button class="btn" id="tv-btn" onclick="toggleTradovate()" title="Connect Tradovate real-time feed"
+        style="background:rgba(63,185,80,0.08);border-color:rgba(63,185,80,0.35);color:#3fb950;font-weight:700;">&#9889; Live</button>
     <div class="spacer"></div>
     <div id="countdown-wrap">
         <div id="countdown-ring">
@@ -351,8 +354,7 @@ body {
         </div>
         <span id="countdown-text">5:00</span>
     </div>
-    <button class="btn" onclick="manualRefresh()">Refresh Now</button>
-    <button class="btn" id="tv-btn" onclick="toggleTradovate()" title="Connect Tradovate real-time feed">&#9889; Live</button>
+    <button class="btn" id="refresh-btn" onclick="manualRefresh()">Refresh Now</button>
     <button class="btn" id="alert-btn" onclick="toggleAlerts()" title="Toggle signal alerts">&#128276; Alerts: OFF</button>
     <button class="btn" id="bt-btn" onclick="openBacktest()" style="background:rgba(88,166,255,0.1);border-color:rgba(88,166,255,0.3);color:#58a6ff;">Backtest</button>
 </div>
