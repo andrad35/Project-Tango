@@ -239,6 +239,23 @@ body {
 .btn.tv-error      { background: rgba(248,81,73,0.15);  border-color: #f85149; color: #f85149; }
 @keyframes tv-pulse { 0%,100%{opacity:1} 50%{opacity:0.65} }
 
+/* ── Bot button states ── */
+.btn.bot-on  { background: rgba(210,153,34,0.15); border-color: rgba(210,153,34,0.5); color: #d29922; }
+.btn.bot-in  { background: rgba(248,81,73,0.15);  border-color: rgba(248,81,73,0.5);  color: #f85149;
+               animation: tv-pulse 1.5s infinite; }
+
+/* ── Bot status bar ── */
+#bot-bar {
+    display: none;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.03em;
+    padding: 4px 14px;
+    background: rgba(210,153,34,0.08);
+    border-bottom: 1px solid rgba(210,153,34,0.2);
+    color: #d29922;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#bot-bar.bot-error { background: rgba(248,81,73,0.08); border-color: rgba(248,81,73,0.2); color: #f85149; }
+
 /* ── Tradovate credentials modal ── */
 #tv-modal {
     display: none; position: fixed; inset: 0; z-index: 400;
@@ -344,6 +361,7 @@ body {
     </div>
     <button class="btn" id="tv-btn" onclick="toggleTradovate()" title="Connect Tradovate real-time feed"
         style="background:rgba(63,185,80,0.08);border-color:rgba(63,185,80,0.35);color:#3fb950;font-weight:700;">&#9889; Live</button>
+    <button class="btn" id="bot-btn" onclick="toggleBot()" title="Auto-trade MES signals (requires live feed)">&#129302; Bot: OFF</button>
     <div class="spacer"></div>
     <div id="countdown-wrap">
         <div id="countdown-ring">
@@ -358,6 +376,9 @@ body {
     <button class="btn" id="alert-btn" onclick="toggleAlerts()" title="Toggle signal alerts">&#128276; Alerts: OFF</button>
     <button class="btn" id="bt-btn" onclick="openBacktest()" style="background:rgba(88,166,255,0.1);border-color:rgba(88,166,255,0.3);color:#58a6ff;">Backtest</button>
 </div>
+
+<!-- Bot status bar -->
+<div id="bot-bar"></div>
 
 <!-- Main -->
 <div id="main">
@@ -1239,7 +1260,10 @@ function applyStrategy(bars, lastPrice, fitContent) {
     document.getElementById('hl-count').textContent   = `HL Setups: ${hlCount}`;
 
     renderSignals(signals);
-    if (!fitContent) fireAlerts(signals); // only alert on auto-refresh, not initial load
+    if (!fitContent) {
+        fireAlerts(signals);    // browser notifications + audio
+        fireBotSignals(signals); // auto order placement
+    }
 }
 
 // ============================================================
@@ -1285,16 +1309,31 @@ function manualRefresh() {
 // ============================================================
 // TRADOVATE REAL-TIME FEED
 // ============================================================
+const TV_REST         = 'https://live.tradovateapi.com/v1';
+const TV_WS_URL       = 'wss://md.tradovateapi.com/v1/websocket';
+const TV_MAX_RETRIES  = 3;
+const TV_RETRY_BASE_MS = 2000; // 2s, 4s, 8s
+
 let tvToken       = null;   // access token after auth
+let tvAccountId   = null;   // live account id (from /account/list)
+let tvAccountSpec = null;   // live account name
 let tvWs          = null;   // MD WebSocket
 let tvConnected   = false;  // true when authorized + streaming
 let tvMsgId       = 1;      // monotonic frame id
 let tvChartSub    = null;   // chart subscription id (from md/getchart response)
 let tvBars        = [];     // current bar array (live-updated)
 let tvLastPrice   = null;   // latest trade price
+let tvRetryCount  = 0;      // consecutive reconnect attempts
+let tvRetryTimer  = null;   // pending reconnect setTimeout handle
 
-// Derive ES front-month contract (e.g. ESM6 for April 2026)
-function getESFrontMonth() {
+// ── Bot state ──
+let botEnabled     = false;
+let botPosition    = null;  // { orderId, type, price, stop, tp } while in trade
+let botPollTimer   = null;  // setInterval handle for position polling
+const botFired     = new Set(); // signals already acted on (seeded from history)
+
+// Derive MES front-month contract (e.g. MESM6 for April 2026)
+function getMESFrontMonth() {
     const now = new Date();
     const yr  = now.getUTCFullYear() % 10;  // single digit year
     const mo  = now.getUTCMonth() + 1;      // 1-based
@@ -1310,12 +1349,12 @@ function getESFrontMonth() {
     let q = quarters.find(q => q.month > mo || (q.month === mo && now.getUTCDate() < 17));
     if (!q) q = { code:'H', month:3 }; // wrap to next year's March (yr+1 handled separately)
     const yearDigit = (q.month === 3 && mo >= 12) ? (yr + 1) % 10 : yr;
-    return 'ES' + q.code + yearDigit;  // e.g. ESM6
+    return 'MES' + q.code + yearDigit;  // e.g. MESM6
 }
 
-// POST to Tradovate demo REST API
+// POST to Tradovate live REST API
 async function tradovateAuth(username, password) {
-    const res = await fetch('https://demo.tradovateapi.com/v1/auth/accesstokenrequest', {
+    const res = await fetch(`${TV_REST}/auth/accesstokenrequest`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify({
@@ -1350,7 +1389,7 @@ function handleTVMsg(msg) {
 
     // Authorization confirmed → subscribe to chart + live quotes
     if (e === 'authorized') {
-        const sym = getESFrontMonth();
+        const sym = getMESFrontMonth();
         console.log('[TV] Authorized. Subscribing to', sym);
 
         // Request 15-minute chart bars (last 5 days of history)
@@ -1373,7 +1412,8 @@ function handleTVMsg(msg) {
         sendTV('md/subscribeQuote', { symbol: sym });
 
         updateTVStatus('connected', sym + ' live');
-        tvConnected = true;
+        tvConnected  = true;
+        tvRetryCount = 0; // reset — connection fully established
     }
 
     // Chart bar data (historical + live bar updates)
@@ -1439,6 +1479,15 @@ async function connectTradovate() {
 
     try {
         tvToken = await tradovateAuth(username, password);
+        // Fetch live account id for order placement
+        const acctRes = await fetch(`${TV_REST}/account/list`, {
+            headers: { 'Authorization': `Bearer ${tvToken}` },
+        });
+        const accounts = await acctRes.json();
+        if (!accounts.length) throw new Error('No live accounts found on this login');
+        tvAccountId   = accounts[0].id;
+        tvAccountSpec = accounts[0].name;
+        console.log('[TV] Account:', tvAccountSpec, tvAccountId);
     } catch (err) {
         updateTVStatus('error', 'Auth failed');
         console.error('[TV] Auth error:', err.message);
@@ -1449,7 +1498,7 @@ async function connectTradovate() {
         return;
     }
 
-    const ws = new WebSocket('wss://md-demo.tradovateapi.com/v1/websocket');
+    const ws = new WebSocket(TV_WS_URL);
     tvWs = ws;
 
     ws.onopen = () => {
@@ -1487,10 +1536,20 @@ async function connectTradovate() {
     ws.onclose = (ev) => {
         console.log('[TV] WS closed', ev.code, ev.reason);
         if (tvConnected) {
-            // Unexpected close — resume Yahoo Finance
             tvConnected = false;
-            updateTVStatus('', 'Live');
-            resumeYahooRefresh();
+            tvChartSub  = null;
+            if (tvRetryCount < TV_MAX_RETRIES) {
+                const delay = TV_RETRY_BASE_MS * Math.pow(2, tvRetryCount);
+                tvRetryCount++;
+                console.log(`[TV] Reconnecting in ${delay}ms (attempt ${tvRetryCount}/${TV_MAX_RETRIES})`);
+                updateTVStatus('connecting', `Reconnecting… (${tvRetryCount}/${TV_MAX_RETRIES})`);
+                tvRetryTimer = setTimeout(() => connectTradovate(), delay);
+            } else {
+                // All retries exhausted — fall back to Yahoo
+                tvRetryCount = 0;
+                updateTVStatus('', 'Live');
+                resumeYahooRefresh();
+            }
         }
     };
 
@@ -1506,9 +1565,12 @@ async function connectTradovate() {
 }
 
 function disconnectTradovate() {
-    tvConnected = false;
-    tvBars      = [];
-    tvLastPrice = null;
+    // Cancel any pending reconnect attempt
+    if (tvRetryTimer) { clearTimeout(tvRetryTimer); tvRetryTimer = null; }
+    tvRetryCount = 0;
+    tvConnected  = false;
+    tvBars       = [];
+    tvLastPrice  = null;
     if (tvWs) {
         // Cancel chart subscription before closing so server cleans up immediately
         if (tvChartSub !== null) {
@@ -1519,8 +1581,12 @@ function disconnectTradovate() {
         tvWs.close();
         tvWs = null;
     }
-    tvToken    = null;
-    tvMsgId    = 1;
+    tvToken       = null;
+    tvAccountId   = null;
+    tvAccountSpec = null;
+    tvMsgId       = 1;
+    // Stop bot position polling if active
+    if (botPollTimer) { clearInterval(botPollTimer); botPollTimer = null; }
     updateTVStatus('', 'Live');
     resumeYahooRefresh();
 }
@@ -1531,6 +1597,137 @@ function resumeYahooRefresh() {
     countEl.style.display = '';
     // Reload fresh Yahoo data
     loadData();
+}
+
+// ============================================================
+// BOT — AUTO ORDER PLACEMENT
+// ============================================================
+
+// Round price to nearest MES tick (0.25)
+function roundTick(price) { return Math.round(price * 4) / 4; }
+
+// Place a bracket market order on Tradovate live
+async function placeBotOrder(signal) {
+    const sym = getMESFrontMonth();
+    const body = {
+        accountSpec: tvAccountSpec,
+        accountId:   tvAccountId,
+        action:      'Buy',
+        symbol:      sym,
+        orderQty:    1,
+        orderType:   'Market',
+        isAutomated: true,
+        bracket1: {  // stop loss
+            action:    'Sell',
+            orderType: 'Stop',
+            stopPrice:  roundTick(signal.stop),
+        },
+        bracket2: {  // take profit
+            action:    'Sell',
+            orderType: 'Limit',
+            price:      roundTick(signal.tp),
+        },
+    };
+    const res = await fetch(`${TV_REST}/order/placeorder`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${tvToken}` },
+        body:    JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok || data.errorText) throw new Error(data.errorText || `HTTP ${res.status}`);
+    console.log('[BOT] Order placed:', data);
+    return data;
+}
+
+// Poll position list every 15s to detect when the trade closes
+async function pollBotPosition() {
+    if (!botPosition || !tvToken) return;
+    try {
+        const res = await fetch(`${TV_REST}/position/list`, {
+            headers: { 'Authorization': `Bearer ${tvToken}` },
+        });
+        const positions = await res.json();
+        const open = Array.isArray(positions) && positions.some(p => p.netPos !== 0);
+        if (!open) {
+            console.log('[BOT] Position closed — ready for next signal');
+            botPosition = null;
+            clearInterval(botPollTimer);
+            botPollTimer = null;
+            updateBotStatus();
+        }
+    } catch(e) {
+        console.warn('[BOT] Poll error:', e.message);
+    }
+}
+
+// Fire bot orders for new signals (independent of alertsEnabled)
+function fireBotSignals(signals) {
+    if (!botEnabled || !tvConnected || !tvAccountId) return;
+    signals.forEach(s => {
+        const key = s.type + ':' + s.time;
+        if (botFired.has(key)) return;
+        botFired.add(key);
+        if (botPosition) return; // already in a trade
+        placeBotOrder(s)
+            .then(result => {
+                botPosition = { orderId: result.orderId, type: s.type, price: s.price, stop: s.stop, tp: s.tp };
+                updateBotStatus();
+                if (botPollTimer) clearInterval(botPollTimer);
+                botPollTimer = setInterval(pollBotPosition, 15000);
+            })
+            .catch(err => {
+                console.error('[BOT] Order failed:', err.message);
+                updateBotStatus('error', err.message);
+            });
+    });
+}
+
+function toggleBot() {
+    if (!tvConnected) {
+        alert('Connect the live feed first, then enable the bot.');
+        return;
+    }
+    botEnabled = !botEnabled;
+    if (botEnabled) {
+        // Seed botFired so we don't trade historical signals
+        if (_lastBars) {
+            const { signals } = runStrategy(_lastBars);
+            signals.forEach(s => botFired.add(s.type + ':' + s.time));
+        }
+    } else {
+        // Disabling bot — leave any open position alone, just stop monitoring
+        if (botPollTimer) { clearInterval(botPollTimer); botPollTimer = null; }
+        botPosition = null;
+    }
+    updateBotStatus();
+}
+
+function updateBotStatus(errMsg) {
+    const btn = document.getElementById('bot-btn');
+    const bar = document.getElementById('bot-bar');
+    if (errMsg) {
+        btn.className    = 'btn bot-on';
+        btn.textContent  = '\u{1F916} Bot: ON';
+        bar.className    = 'bot-error';
+        bar.textContent  = '\u26A0 Order failed: ' + errMsg;
+        bar.style.display = '';
+        return;
+    }
+    if (botEnabled && botPosition) {
+        btn.className   = 'btn bot-in';
+        btn.textContent = '\u{1F916} Bot: IN';
+        bar.className   = '';
+        bar.textContent = `MES ${botPosition.type} @ ${f(botPosition.price)} \u2502 SL ${f(botPosition.stop)} \u2502 TP ${f(botPosition.tp)}`;
+        bar.style.display = '';
+    } else if (botEnabled) {
+        btn.className   = 'btn bot-on';
+        btn.textContent = '\u{1F916} Bot: ON';
+        bar.style.display = 'none';
+    } else {
+        btn.className   = 'btn';
+        btn.textContent = '\u{1F916} Bot: OFF';
+        bar.style.display = 'none';
+    }
 }
 
 function updateTVStatus(state, label) {
@@ -2064,8 +2261,7 @@ function renderBTLog(trades) {
 <div id="tv-modal">
     <div id="tv-modal-box">
         <h2>&#9889; Connect Real-Time Feed</h2>
-        <p>Enter your <strong>Tradovate demo account</strong> credentials.<br>
-           Free account at <strong>tradovate.com</strong> — no deposit required.<br>
+        <p>Enter your <strong>Tradovate live account</strong> credentials.<br>
            Credentials are saved locally and never sent to GitHub.</p>
         <div class="tv-field">
             <label>Username</label>
