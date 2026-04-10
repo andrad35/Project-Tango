@@ -213,9 +213,16 @@ body {
 <div id="topbar">
     <div class="status-dot dot-loading" id="status-dot"></div>
     <h1>HL-HH Bullish Structure</h1>
-    <span class="badge badge-blue">ES Futures</span>
+    <span class="badge badge-blue" id="inst-badge">ES Futures</span>
     <span class="badge badge-green">15m</span>
     <div class="price-display price-up" id="last-price">--</div>
+    <!-- Instrument toggle -->
+    <div style="display:flex;gap:4px;background:#161b22;border:1px solid #30363d;border-radius:7px;padding:3px;">
+        <button id="btn-es"  onclick="switchInstrument('ES')"
+            style="padding:3px 10px;border-radius:5px;border:none;cursor:pointer;font-size:11px;font-weight:700;font-family:inherit;background:#3fb950;color:#0d1117;">ES</button>
+        <button id="btn-spy" onclick="switchInstrument('SPY')"
+            style="padding:3px 10px;border-radius:5px;border:none;cursor:pointer;font-size:11px;font-weight:700;font-family:inherit;background:transparent;color:#7d8590;">SPY</button>
+    </div>
     <div class="spacer"></div>
     <div id="countdown-wrap">
         <div id="countdown-ring">
@@ -751,9 +758,37 @@ function fetchWithTimeout(url, ms) {
     return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(t));
 }
 
+// ============================================================
+// INSTRUMENT SWITCHING — ES (default) or SPY
+// ============================================================
+let activeInstrument = 'ES';
+
+function switchInstrument(inst) {
+    activeInstrument = inst;
+
+    // Update toggle button styles
+    const esBtn  = document.getElementById('btn-es');
+    const spyBtn = document.getElementById('btn-spy');
+    esBtn.style.background  = inst === 'ES'  ? '#3fb950' : 'transparent';
+    esBtn.style.color       = inst === 'ES'  ? '#0d1117' : '#7d8590';
+    spyBtn.style.background = inst === 'SPY' ? '#58a6ff' : 'transparent';
+    spyBtn.style.color      = inst === 'SPY' ? '#0d1117' : '#7d8590';
+
+    // Update instrument badge
+    document.getElementById('inst-badge').textContent = inst === 'ES' ? 'ES Futures' : 'SPY ETF';
+
+    // Reload live chart with new instrument
+    if (countdownTimer) clearInterval(countdownTimer);
+    loadData();
+}
+
+// ============================================================
+// DATA FETCHING
+// ============================================================
 async function fetchData() {
-    const yf1 = 'https://query1.finance.yahoo.com/v8/finance/chart/ES=F?interval=15m&range=5d&includePrePost=false';
-    const yf2 = 'https://query2.finance.yahoo.com/v8/finance/chart/ES=F?interval=15m&range=5d&includePrePost=false';
+    const ticker = activeInstrument === 'SPY' ? 'SPY' : 'ES=F';
+    const yf1 = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=15m&range=5d&includePrePost=false`;
+    const yf2 = `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?interval=15m&range=5d&includePrePost=false`;
 
     const attempts = [
         { url: yf1,                                                             ms: 8000 },
@@ -1122,20 +1157,21 @@ loadData();
 // BACKTEST ENGINE
 // ============================================================
 
-// Fetch 60 days of 15m data for backtest
+// Fetch backtest data — ES: 60d 15m from Yahoo | SPY: 2yr 15m from Polygon.io
 async function fetchBacktestData() {
+    if (activeInstrument === 'SPY') return fetchPolygonSPY();
+
+    // ES — Yahoo Finance 15m 60 days
     const urls = [
         'https://query1.finance.yahoo.com/v8/finance/chart/ES=F?interval=15m&range=60d&includePrePost=false',
         'https://query2.finance.yahoo.com/v8/finance/chart/ES=F?interval=15m&range=60d&includePrePost=false',
         'https://query1.finance.yahoo.com/v8/finance/chart/ES=F?interval=15m&range=30d&includePrePost=false',
     ];
-
     const proxies = [
         u => u,
         u => 'https://corsproxy.io/?' + encodeURIComponent(u),
         u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
     ];
-
     const errors = [];
     for (const base of urls) {
         for (const wrap of proxies) {
@@ -1148,6 +1184,53 @@ async function fetchBacktestData() {
         }
     }
     throw new Error('Could not fetch backtest data.\n' + errors.slice(0,3).join(' | '));
+}
+
+// Polygon.io — SPY 15m, 2 years
+async function fetchPolygonSPY() {
+    const apiKey = document.getElementById('polygon-api-key')?.value.trim()
+                || localStorage.getItem('polygonKey') || '';
+    if (!apiKey) throw new Error('Enter your free Polygon.io API key above.\nGet one at: polygon.io/dashboard');
+
+    const to   = new Date();
+    const from = new Date();
+    from.setFullYear(from.getFullYear() - 2);
+    const fmt  = d => d.toISOString().slice(0, 10); // YYYY-MM-DD
+
+    const url = `https://api.polygon.io/v2/aggs/ticker/SPY/range/15/minute/${fmt(from)}/${fmt(to)}` +
+                `?adjusted=true&sort=asc&limit=50000&apiKey=${apiKey}`;
+
+    const proxies = [
+        u => u,
+        u => 'https://corsproxy.io/?' + encodeURIComponent(u),
+        u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+    ];
+
+    for (const wrap of proxies) {
+        try {
+            const r = await fetchWithTimeout(wrap(url), 30000);
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const json = await r.json();
+            if (json.status === 'ERROR') throw new Error(json.error || 'Polygon error');
+            return parsePolygon(json);
+        } catch (e) { if (e.message.includes('API key') || e.message.includes('Polygon')) throw e; }
+    }
+    throw new Error('Could not reach Polygon.io. Check your API key and try again.');
+}
+
+// Parse Polygon.io aggregate response into bars format
+function parsePolygon(json) {
+    const results = json?.results;
+    if (!results?.length) throw new Error('No Polygon data returned — check API key or date range.');
+    const bars = results.map(r => ({
+        time:   Math.floor(r.t / 1000), // ms → seconds
+        open:   r.o,
+        high:   r.h,
+        low:    r.l,
+        close:  r.c,
+        volume: r.v || 0,
+    }));
+    return { bars, last: bars.at(-1)?.close ?? null };
 }
 
 // Simulate trades from strategy signals
@@ -1294,7 +1377,16 @@ function recalcDollar() {
 function openBacktest() {
     const overlay = document.getElementById('bt-overlay');
     overlay.style.display = 'flex';
-    document.getElementById('bt-status').textContent  = 'Fetching 60 days of data...';
+    const isSPY = activeInstrument === 'SPY';
+    document.getElementById('bt-subtitle').textContent =
+        isSPY ? 'SPY ETF 15m — Last 2 Years (Polygon.io) — Filters Applied'
+               : 'ES Futures 15m — Last 60 Days — Filters Applied';
+    document.getElementById('polygon-key-wrap').style.display = isSPY ? 'flex' : 'none';
+    // Restore saved API key
+    const saved = localStorage.getItem('polygonKey');
+    if (saved) document.getElementById('polygon-api-key').value = saved;
+
+    document.getElementById('bt-status').textContent  = isSPY ? 'Fetching 2 years of SPY data from Polygon.io...' : 'Fetching 60 days of data...';
     document.getElementById('bt-metrics').innerHTML   = '';
     document.getElementById('bt-log-body').innerHTML  = '';
     document.getElementById('bt-chart-wrap').style.display  = 'none';
@@ -1422,7 +1514,15 @@ function renderBTLog(trades) {
     <div style="display:flex;align-items:center;gap:12px;padding:10px 16px;background:#161b22;border-bottom:1px solid #30363d;flex-shrink:0;flex-wrap:wrap;">
         <button onclick="closeBacktest()" class="btn" style="padding:4px 10px;">&#8592; Live</button>
         <span style="font-size:14px;font-weight:700;">Backtest Results</span>
-        <span style="font-size:11px;color:#7d8590;">ES Futures 15m &mdash; Last 60 Days &mdash; Filters Applied</span>
+        <span id="bt-subtitle" style="font-size:11px;color:#7d8590;">ES Futures 15m &mdash; Last 60 Days &mdash; Filters Applied</span>
+        <!-- Polygon API key — shown only in SPY mode -->
+        <div id="polygon-key-wrap" style="display:none;align-items:center;gap:6px;">
+            <label style="font-size:11px;color:#7d8590;">Polygon API Key</label>
+            <input id="polygon-api-key" type="text" placeholder="Free key: polygon.io/dashboard"
+                style="width:200px;background:#21262d;border:1px solid #30363d;color:#e6edf3;
+                       border-radius:5px;padding:3px 7px;font-size:11px;font-family:inherit;"
+                oninput="localStorage.setItem('polygonKey', this.value)">
+        </div>
         <div style="display:flex;align-items:center;gap:8px;margin-left:auto;">
             <label style="font-size:11px;color:#7d8590;">Account</label>
             <input id="bt-account" type="number" value="10000" min="1000" step="1000"
