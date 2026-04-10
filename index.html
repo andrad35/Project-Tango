@@ -268,7 +268,7 @@ body {
         <div id="filter-section">
             <div id="filter-title">
                 <span>Signal Filters</span>
-                <span id="filter-count" class="c-green">6 / 6 on</span>
+                <span id="filter-count" class="c-green">9 / 9 on</span>
             </div>
             <div id="filter-grid">
                 <button class="f-btn on" id="fb-rth"       onclick="toggleFilter('rth')">RTH Only</button>
@@ -277,6 +277,9 @@ body {
                 <button class="f-btn on" id="fb-volume"    onclick="toggleFilter('volume')">Volume</button>
                 <button class="f-btn on" id="fb-structure" onclick="toggleFilter('minStructure')">Structure</button>
                 <button class="f-btn on" id="fb-atr"       onclick="toggleFilter('minATR')">Min ATR</button>
+                <button class="f-btn on" id="fb-adx"       onclick="toggleFilter('adx')">ADX &gt;20</button>
+                <button class="f-btn on" id="fb-vwap"      onclick="toggleFilter('vwap')">VWAP</button>
+                <button class="f-btn on" id="fb-session"   onclick="toggleFilter('sessionHours')">Sess Hrs</button>
             </div>
         </div>
 
@@ -330,6 +333,15 @@ const CFG = {
         minATR:         true,   // minimum volatility — avoids dead/ranging markets
         atrMinPct:      0.70,   // current ATR must be >= 70% of 50-bar average
         atrAvgLen:      50,
+
+        // ── New filters targeting 60% win rate ──
+        adx:            true,   // ADX > threshold = trending market (not ranging/choppy)
+        adxThreshold:   20,     // standard trend strength threshold
+        adxLength:      14,
+        vwap:           true,   // price above daily VWAP = bullish institutional bias
+        sessionHours:   true,   // high-probability hours only (open + power hour)
+                                //   Opening: 9:30–11:30 AM ET (directional momentum)
+                                //   Power hour: 2:00–4:00 PM ET (EOD positioning)
     },
 };
 
@@ -373,6 +385,16 @@ const candleSeries = chart.addCandlestickSeries({
 const emaSeries = chart.addLineSeries({
     color:             'rgba(88,166,255,0.5)',
     lineWidth:         1,
+    priceLineVisible:  false,
+    lastValueVisible:  false,
+    crosshairMarkerVisible: false,
+});
+
+// VWAP line overlay (daily reset, gold/yellow)
+const vwapSeries = chart.addLineSeries({
+    color:             'rgba(210,170,0,0.7)',
+    lineWidth:         1,
+    lineStyle:         1, // dashed
     priceLineVisible:  false,
     lastValueVisible:  false,
     crosshairMarkerVisible: false,
@@ -434,6 +456,90 @@ function calcSMA(values, period) {
 }
 
 // Pivot detection
+// ADX — Average Directional Index (Wilder, period=14)
+// Measures TREND STRENGTH regardless of direction.
+// ADX > 20 = trending, ADX < 20 = ranging/choppy (avoid)
+function calcADX(bars, period) {
+    const adx = new Array(bars.length).fill(null);
+    if (bars.length < period * 2 + 1) return adx;
+
+    const pDM = new Array(bars.length).fill(0);
+    const nDM = new Array(bars.length).fill(0);
+    const tr  = new Array(bars.length).fill(0);
+
+    for (let i = 1; i < bars.length; i++) {
+        const up   = bars[i].high - bars[i-1].high;
+        const down = bars[i-1].low - bars[i].low;
+        pDM[i] = up > down && up > 0 ? up : 0;
+        nDM[i] = down > up && down > 0 ? down : 0;
+        tr[i]  = Math.max(
+            bars[i].high - bars[i].low,
+            Math.abs(bars[i].high - bars[i-1].close),
+            Math.abs(bars[i].low  - bars[i-1].close));
+    }
+
+    // Wilder's initial smoothing
+    let sTR = 0, sPDM = 0, sNDM = 0;
+    for (let i = 1; i <= period; i++) { sTR += tr[i]; sPDM += pDM[i]; sNDM += nDM[i]; }
+
+    const dxArr = [];
+    for (let i = period; i < bars.length; i++) {
+        if (i > period) {
+            sTR  = sTR  - sTR/period  + tr[i];
+            sPDM = sPDM - sPDM/period + pDM[i];
+            sNDM = sNDM - sNDM/period + nDM[i];
+        }
+        const diP = sTR > 0 ? 100 * sPDM / sTR : 0;
+        const diN = sTR > 0 ? 100 * sNDM / sTR : 0;
+        const sum = diP + diN;
+        dxArr.push({ i, val: sum > 0 ? 100 * Math.abs(diP - diN) / sum : 0 });
+    }
+
+    if (dxArr.length < period) return adx;
+
+    // ADX = Wilder's smoothed DX
+    let adxVal = dxArr.slice(0, period).reduce((s, d) => s + d.val, 0) / period;
+    adx[dxArr[period - 1].i] = adxVal;
+    for (let k = period; k < dxArr.length; k++) {
+        adxVal = (adxVal * (period - 1) + dxArr[k].val) / period;
+        adx[dxArr[k].i] = adxVal;
+    }
+    return adx;
+}
+
+// VWAP — Volume Weighted Average Price, resets daily at 9:30 AM ET
+// Price above VWAP = buyers in control (bullish institutional bias)
+function calcVWAP(bars) {
+    const vwap = new Array(bars.length).fill(null);
+    let cumTPV = 0, cumVol = 0, lastDate = null;
+
+    for (let i = 0; i < bars.length; i++) {
+        const bar  = bars[i];
+        const date = new Date(bar.time * 1000).toLocaleDateString('en-US', { timeZone: 'America/New_York' });
+
+        if (date !== lastDate) { cumTPV = 0; cumVol = 0; lastDate = date; }
+
+        const tp  = (bar.high + bar.low + bar.close) / 3;
+        const vol = bar.volume || 1; // fallback to 1 so VWAP still computes without volume
+        cumTPV += tp * vol;
+        cumVol += vol;
+        vwap[i] = cumTPV / cumVol;
+    }
+    return vwap;
+}
+
+// Session hours: high-probability windows for ES follow-through
+// Opening: 9:30–11:30 AM ET  (directional momentum, highest volume)
+// Power hr: 2:00–4:00 PM ET  (end-of-day institutional positioning)
+function isSessionHour(unixSeconds) {
+    const et   = new Date(unixSeconds * 1000).toLocaleString('en-US',
+        { timeZone:'America/New_York', hour:'2-digit', minute:'2-digit', hour12:false });
+    const [h, m] = et.split(':').map(Number);
+    const mins = h * 60 + m;
+    return (mins >= 9*60+30 && mins < 11*60+30) ||
+           (mins >= 14*60  && mins < 16*60);
+}
+
 function isPivotHigh(bars, idx, L, R) {
     if (idx - L < 0 || idx + R >= bars.length) return false;
     const p = bars[idx].high;
@@ -476,6 +582,8 @@ function runStrategy(bars) {
     const ema    = calcEMA(bars, F.emaLength);
     const vols   = bars.map(b => b.volume || 0);
     const volAvg = calcSMA(vols, F.volumeAvgLen);
+    const adxArr = calcADX(bars, F.adxLength);
+    const vwap   = calcVWAP(bars);
 
     let prevHigh=null, lastHigh=null, prevLow=null, lastLow=null;
     let setupActive=false, breakoutLevel=null, breakoutFired=false, lockedHL=null;
@@ -534,13 +642,16 @@ function runStrategy(bars) {
         const candleRange = bar.high - bar.low;
         const closePos    = candleRange > 0 ? (bar.close - bar.low) / candleRange : 0.5;
 
-        const rthOk      = !F.rth         || isRTH(bar.time);
-        const emaOk      = !F.ema         || (ema[i] !== null && bar.close > ema[i]);
-        const closeOk    = !F.strongClose || closePos >= F.closeThreshold;
-        const volumeOk   = !F.volume      || (volAvg[i] !== null && bar.volume > volAvg[i] * F.volumeMult);
-        const atrOk      = !F.minATR      || (atrAvg[i] !== null && atrVal >= atrAvg[i] * F.atrMinPct);
+        const rthOk      = !F.rth          || isRTH(bar.time);
+        const emaOk      = !F.ema          || (ema[i] !== null && bar.close > ema[i]);
+        const closeOk    = !F.strongClose  || closePos >= F.closeThreshold;
+        const volumeOk   = !F.volume       || (volAvg[i] !== null && bar.volume > volAvg[i] * F.volumeMult);
+        const atrOk      = !F.minATR       || (atrAvg[i] !== null && atrVal >= atrAvg[i] * F.atrMinPct);
+        const adxOk      = !F.adx          || (adxArr[i] !== null && adxArr[i] >= F.adxThreshold);
+        const vwapOk     = !F.vwap         || (vwap[i] !== null && bar.close > vwap[i]);
+        const sessionOk  = !F.sessionHours || isSessionHour(bar.time);
 
-        const allFiltersOk = rthOk && emaOk && closeOk && volumeOk && atrOk;
+        const allFiltersOk = rthOk && emaOk && closeOk && volumeOk && atrOk && adxOk && vwapOk && sessionOk;
 
         // ── Option A: Breakout ──
         const isBreakout = setupActive && !breakoutFired && breakoutLevel !== null && bar.close > breakoutLevel;
@@ -555,7 +666,7 @@ function runStrategy(bars) {
                     color:'#00ee00', shape:'arrowUp', text:'BUY BO', size:2 });
                 signals.push({
                     type:'Breakout', time:bar.time, price:bar.close, stop, tp,
-                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk),
+                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk),
                 });
             } else {
                 // Filtered out — show a faint grey marker so user can see what was skipped
@@ -588,7 +699,7 @@ function runStrategy(bars) {
                     color:'#00ccff', shape:'arrowUp', text:'BUY RT', size:2 });
                 signals.push({
                     type:'Retest', time:bar.time, price:bar.close, stop, tp,
-                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk),
+                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk),
                 });
             } else {
                 filteredCount++;
@@ -600,22 +711,29 @@ function runStrategy(bars) {
 
     markers.sort((a,b) => a.time > b.time ? 1 : a.time < b.time ? -1 : 0);
 
-    // Return EMA data for chart plotting
+    // Return EMA and VWAP data for chart plotting
     const emaLine = ema
         .map((v, i) => v !== null ? { time: bars[i].time, value: v } : null)
         .filter(Boolean);
 
-    return { markers, signals, hlCount, filteredCount, emaLine };
+    const vwapLine = vwap
+        .map((v, i) => v !== null ? { time: bars[i].time, value: v } : null)
+        .filter(Boolean);
+
+    return { markers, signals, hlCount, filteredCount, emaLine, vwapLine };
 }
 
 // Build a list of which filters passed (for signal tooltip)
-function buildTags(rth, ema, close, vol, atr) {
+function buildTags(rth, ema, close, vol, atr, adx, vwap, session) {
     const tags = [];
-    if (CFG.filters.rth         && rth)   tags.push('RTH');
-    if (CFG.filters.ema         && ema)   tags.push('EMA');
-    if (CFG.filters.strongClose && close) tags.push('Close');
-    if (CFG.filters.volume      && vol)   tags.push('Vol');
-    if (CFG.filters.minATR      && atr)   tags.push('ATR');
+    if (CFG.filters.rth          && rth)     tags.push('RTH');
+    if (CFG.filters.ema          && ema)     tags.push('EMA');
+    if (CFG.filters.strongClose  && close)   tags.push('Close');
+    if (CFG.filters.volume       && vol)     tags.push('Vol');
+    if (CFG.filters.minATR       && atr)     tags.push('ATR');
+    if (CFG.filters.adx          && adx)     tags.push('ADX');
+    if (CFG.filters.vwap         && vwap)    tags.push('VWAP');
+    if (CFG.filters.sessionHours && session) tags.push('Session');
     return tags;
 }
 
@@ -751,10 +869,10 @@ function renderSignals(signals) {
 
 function updateFilterCount() {
     const F = CFG.filters;
-    const active = [F.rth, F.ema, F.strongClose, F.volume, F.minStructure, F.minATR].filter(Boolean).length;
+    const active = [F.rth, F.ema, F.strongClose, F.volume, F.minStructure, F.minATR, F.adx, F.vwap, F.sessionHours].filter(Boolean).length;
     const el = document.getElementById('filter-count');
-    el.textContent = `${active} / 6 on`;
-    el.className = active === 6 ? 'c-green' : active >= 3 ? 'c-yellow' : 'c-red';
+    el.textContent = `${active} / 9 on`;
+    el.className = active === 9 ? 'c-green' : active >= 5 ? 'c-yellow' : 'c-red';
 }
 
 // ============================================================
@@ -769,7 +887,8 @@ function toggleFilter(key) {
     // Update button appearance
     const idMap = {
         rth:'fb-rth', ema:'fb-ema', strongClose:'fb-close',
-        volume:'fb-volume', minStructure:'fb-structure', minATR:'fb-atr'
+        volume:'fb-volume', minStructure:'fb-structure', minATR:'fb-atr',
+        adx:'fb-adx', vwap:'fb-vwap', sessionHours:'fb-session',
     };
     const btn = document.getElementById(idMap[key]);
     if (btn) btn.className = 'f-btn ' + (CFG.filters[key] ? 'on' : '');
@@ -784,11 +903,12 @@ function toggleFilter(key) {
 // APPLY STRATEGY + RENDER
 // ============================================================
 function applyStrategy(bars, lastPrice, fitContent) {
-    const { markers, signals, hlCount, filteredCount, emaLine } = runStrategy(bars);
+    const { markers, signals, hlCount, filteredCount, emaLine, vwapLine } = runStrategy(bars);
 
     candleSeries.setData(bars);
     candleSeries.setMarkers(markers);
     emaSeries.setData(CFG.filters.ema ? emaLine : []);
+    vwapSeries.setData(CFG.filters.vwap ? vwapLine : []);
 
     if (fitContent) chart.timeScale().fitContent();
 
