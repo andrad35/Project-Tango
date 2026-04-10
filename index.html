@@ -216,6 +216,7 @@ body {
     <span class="badge badge-blue">ES Futures</span>
     <span class="badge badge-green">15m</span>
     <div class="price-display price-up" id="last-price">--</div>
+    <span id="htf-badge" style="font-size:11px;font-weight:700;color:#7d8590;letter-spacing:.04em;">1H: --</span>
     <div class="spacer"></div>
     <div id="countdown-wrap">
         <div id="countdown-ring">
@@ -274,7 +275,7 @@ body {
         <div id="filter-section">
             <div id="filter-title">
                 <span>Signal Filters</span>
-                <span id="filter-count" class="c-green">9 / 9 on</span>
+                <span id="filter-count" class="c-green">10 / 10 on</span>
             </div>
             <div id="filter-grid">
                 <button class="f-btn on" id="fb-rth"       onclick="toggleFilter('rth')">RTH Only</button>
@@ -286,6 +287,7 @@ body {
                 <button class="f-btn on" id="fb-adx"       onclick="toggleFilter('adx')">ADX &gt;20</button>
                 <button class="f-btn on" id="fb-vwap"      onclick="toggleFilter('vwap')">VWAP</button>
                 <button class="f-btn on" id="fb-session"   onclick="toggleFilter('sessionHours')">Sess Hrs</button>
+                <button class="f-btn on" id="fb-htf"       onclick="toggleFilter('htfEma')" style="grid-column:span 3;">1H EMA Trend</button>
             </div>
         </div>
 
@@ -348,6 +350,10 @@ const CFG = {
         sessionHours:   true,   // high-probability hours only (open + power hour)
                                 //   Opening: 9:30–11:30 AM ET (directional momentum)
                                 //   Power hour: 2:00–4:00 PM ET (EOD positioning)
+
+        // ── Multi-timeframe confluence ──
+        htfEma:         true,   // 1H close above 1H EMA = higher-timeframe bullish trend
+        htfEmaLength:   21,     // 21-period EMA on the 1-hour chart
     },
 };
 
@@ -590,6 +596,7 @@ function runStrategy(bars) {
     const volAvg = calcSMA(vols, F.volumeAvgLen);
     const adxArr = calcADX(bars, F.adxLength);
     const vwap   = calcVWAP(bars);
+    _htf1hPtr = 0; // reset pointer for forward-walk alignment
 
     let prevHigh=null, lastHigh=null, prevLow=null, lastLow=null;
     let setupActive=false, breakoutLevel=null, breakoutFired=false, lockedHL=null;
@@ -656,8 +663,9 @@ function runStrategy(bars) {
         const adxOk      = !F.adx          || (adxArr[i] !== null && adxArr[i] >= F.adxThreshold);
         const vwapOk     = !F.vwap         || (vwap[i] !== null && bar.close > vwap[i]);
         const sessionOk  = !F.sessionHours || isSessionHour(bar.time);
+        const htfOk      = !F.htfEma       || htfBullishAt(bar.time);
 
-        const allFiltersOk = rthOk && emaOk && closeOk && volumeOk && atrOk && adxOk && vwapOk && sessionOk;
+        const allFiltersOk = rthOk && emaOk && closeOk && volumeOk && atrOk && adxOk && vwapOk && sessionOk && htfOk;
 
         // ── Option A: Breakout ──
         const isBreakout = setupActive && !breakoutFired && breakoutLevel !== null && bar.close > breakoutLevel;
@@ -672,7 +680,7 @@ function runStrategy(bars) {
                     color:'#00ee00', shape:'arrowUp', text:'BUY BO', size:2 });
                 signals.push({
                     type:'Breakout', time:bar.time, price:bar.close, stop, tp,
-                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk),
+                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk, htfOk),
                 });
             } else {
                 // Filtered out — show a faint grey marker so user can see what was skipped
@@ -705,7 +713,7 @@ function runStrategy(bars) {
                     color:'#00ccff', shape:'arrowUp', text:'BUY RT', size:2 });
                 signals.push({
                     type:'Retest', time:bar.time, price:bar.close, stop, tp,
-                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk),
+                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk, htfOk),
                 });
             } else {
                 filteredCount++;
@@ -730,7 +738,7 @@ function runStrategy(bars) {
 }
 
 // Build a list of which filters passed (for signal tooltip)
-function buildTags(rth, ema, close, vol, atr, adx, vwap, session) {
+function buildTags(rth, ema, close, vol, atr, adx, vwap, session, htf) {
     const tags = [];
     if (CFG.filters.rth          && rth)     tags.push('RTH');
     if (CFG.filters.ema          && ema)     tags.push('EMA');
@@ -740,6 +748,7 @@ function buildTags(rth, ema, close, vol, atr, adx, vwap, session) {
     if (CFG.filters.adx          && adx)     tags.push('ADX');
     if (CFG.filters.vwap         && vwap)    tags.push('VWAP');
     if (CFG.filters.sessionHours && session) tags.push('Session');
+    if (CFG.filters.htfEma       && htf)     tags.push('1H');
     return tags;
 }
 
@@ -796,6 +805,60 @@ function parseYF(json) {
     }
     if (!bars.length) throw new Error('No valid candles in response');
     return { bars, last };
+}
+
+// ============================================================
+// 1-HOUR DATA FETCH & HTF EMA COMPUTATION
+// ============================================================
+let _htf1h = []; // { time, aboveEMA } sorted ascending — populated each refresh
+
+async function fetch1hData() {
+    const yf1 = 'https://query1.finance.yahoo.com/v8/finance/chart/ES=F?interval=1h&range=60d&includePrePost=false';
+    const yf2 = 'https://query2.finance.yahoo.com/v8/finance/chart/ES=F?interval=1h&range=60d&includePrePost=false';
+    const attempts = [
+        { url: yf1,                                                              ms: 8000 },
+        { url: yf2,                                                              ms: 8000 },
+        { url: 'https://corsproxy.io/?' + encodeURIComponent(yf1),              ms: 20000 },
+        { url: 'https://api.allorigins.win/raw?url=' + encodeURIComponent(yf1), ms: 20000 },
+    ];
+    for (const { url, ms } of attempts) {
+        try {
+            const r = await fetchWithTimeout(url, ms);
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return parseYF(await r.json());
+        } catch (e) { /* try next */ }
+    }
+    return null; // fail silently — HTF filter will pass-through
+}
+
+function build1hEma(bars, period) {
+    if (!bars || !bars.length) return [];
+    const ema = calcEMA(bars, period);
+    return bars.map((b, i) => ({
+        time:     b.time,
+        aboveEMA: ema[i] !== null && b.close > ema[i],
+    }));
+}
+
+// Given a 15m bar's unix time, return whether the latest confirmed 1H bar is above its EMA.
+// Uses a pointer (htf1hPtr) that advances forward — call in ascending time order.
+let _htf1hPtr = 0;
+function htfBullishAt(time) {
+    if (!_htf1h.length) return true; // no data → pass-through
+    while (_htf1hPtr + 1 < _htf1h.length && _htf1h[_htf1hPtr + 1].time <= time) _htf1hPtr++;
+    return _htf1h[_htf1hPtr].aboveEMA;
+}
+
+function updateHTFBadge() {
+    const el = document.getElementById('htf-badge');
+    if (!el) return;
+    if (!_htf1h.length) { el.textContent = '1H: --'; el.style.color = '#7d8590'; return; }
+    const last = _htf1h[_htf1h.length - 1];
+    if (last.aboveEMA) {
+        el.textContent = '1H: BULL'; el.style.color = '#3fb950';
+    } else {
+        el.textContent = '1H: BEAR'; el.style.color = '#f85149';
+    }
 }
 
 // ============================================================
@@ -961,10 +1024,10 @@ function renderSignals(signals) {
 
 function updateFilterCount() {
     const F = CFG.filters;
-    const active = [F.rth, F.ema, F.strongClose, F.volume, F.minStructure, F.minATR, F.adx, F.vwap, F.sessionHours].filter(Boolean).length;
+    const active = [F.rth, F.ema, F.strongClose, F.volume, F.minStructure, F.minATR, F.adx, F.vwap, F.sessionHours, F.htfEma].filter(Boolean).length;
     const el = document.getElementById('filter-count');
-    el.textContent = `${active} / 9 on`;
-    el.className = active === 9 ? 'c-green' : active >= 5 ? 'c-yellow' : 'c-red';
+    el.textContent = `${active} / 10 on`;
+    el.className = active === 10 ? 'c-green' : active >= 6 ? 'c-yellow' : 'c-red';
 }
 
 // ============================================================
@@ -980,7 +1043,7 @@ function toggleFilter(key) {
     const idMap = {
         rth:'fb-rth', ema:'fb-ema', strongClose:'fb-close',
         volume:'fb-volume', minStructure:'fb-structure', minATR:'fb-atr',
-        adx:'fb-adx', vwap:'fb-vwap', sessionHours:'fb-session',
+        adx:'fb-adx', vwap:'fb-vwap', sessionHours:'fb-session', htfEma:'fb-htf',
     };
     const btn = document.getElementById(idMap[key]);
     if (btn) btn.className = 'f-btn ' + (CFG.filters[key] ? 'on' : '');
@@ -1030,9 +1093,13 @@ async function loadData() {
     document.getElementById('loading-msg').textContent = isFirstLoad ? 'Fetching 15-minute OHLCV data...' : 'Refreshing...';
 
     try {
-        const { bars, last } = await fetchData();
+        const [{ bars, last }, d1h] = await Promise.all([fetchData(), fetch1hData()]);
         _lastBars  = bars;
         _lastPrice = last;
+
+        // Build 1H EMA lookup — used by runStrategy() via htfBullishAt()
+        _htf1h = d1h ? build1hEma(d1h.bars, CFG.filters.htfEmaLength) : [];
+        updateHTFBadge();
 
         applyStrategy(bars, last, isFirstLoad);
 
