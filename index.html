@@ -872,8 +872,21 @@ function switchInstrument(inst) {
 // ============================================================
 async function fetchData() {
     const ticker = activeInstrument === 'SPY' ? 'SPY' : 'ES=F';
-    const yf1 = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=15m&range=5d&includePrePost=false`;
-    const yf2 = `https://query2.finance.yahoo.com/v8/finance/chart/${ticker}?interval=15m&range=5d&includePrePost=false`;
+    const isFutures = ticker === 'ES=F';
+
+    // Use period1/period2 + cache-bust to force Yahoo Finance to return fresh data
+    // ES=F trades ~23h/day so includePrePost=true; SPY uses false (RTH only)
+    const now    = Math.floor(Date.now() / 1000);
+    const start  = now - 7 * 24 * 60 * 60; // 7 days ago
+    const prePost = isFutures ? 'true' : 'false';
+    const bust   = Date.now(); // cache-buster
+
+    const base = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}` +
+                 `?interval=15m&period1=${start}&period2=${now}&includePrePost=${prePost}&_=${bust}`;
+    const base2 = base.replace('query1', 'query2');
+
+    const yf1 = base;
+    const yf2 = base2;
 
     const attempts = [
         { url: yf1,                                                             ms: 8000 },
@@ -1176,6 +1189,7 @@ function applyStrategy(bars, lastPrice, fitContent) {
     vwapSeries.setData(CFG.filters.vwap ? vwapLine : []);
 
     if (fitContent) chart.timeScale().fitContent();
+    chart.timeScale().scrollToRealTime(); // always keep latest bar visible
 
     const price = lastPrice ?? bars.at(-1)?.close;
     document.getElementById('last-price').textContent = f(price, 2);
