@@ -2,7 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#161b22">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="HL-HH">
+<link rel="manifest" href="manifest.json">
 <title>HL-HH ES Futures Strategy [15m]</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
@@ -202,6 +207,86 @@ body {
     display: flex; justify-content: space-between;
     font-size: 10px; color: #7d8590;
     flex-shrink: 0;
+}
+
+/* ── Floating panel toggle (mobile only) ── */
+#panel-fab {
+    display: none;
+    position: fixed; bottom: 20px; right: 18px; z-index: 300;
+    width: 52px; height: 52px; border-radius: 50%;
+    background: #3fb950; border: none; cursor: pointer;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    font-size: 22px; color: #0d1117;
+    align-items: center; justify-content: center;
+    transition: background 0.2s;
+}
+#panel-fab:active { background: #2ea043; }
+
+/* ── Panel backdrop (mobile) ── */
+#panel-backdrop {
+    display: none;
+    position: fixed; inset: 0; z-index: 149;
+    background: rgba(0,0,0,0.55);
+}
+
+/* ══ MOBILE RESPONSIVE ══════════════════════════════════════ */
+@media (max-width: 700px) {
+    /* Topbar — compact */
+    #topbar { gap: 7px; padding: 5px 10px; flex-wrap: nowrap; overflow-x: auto; }
+    #topbar h1 { font-size: 11px; white-space: nowrap; }
+    #topbar .badge { display: none; }
+    .price-display { font-size: 16px; }
+    #countdown-wrap { display: none; }
+    #alert-btn { font-size: 11px; padding: 4px 8px; }
+    #bt-btn   { font-size: 11px; padding: 4px 8px; }
+
+    /* Chart fills screen */
+    #main { flex-direction: column; }
+    #chart-wrap { flex: 1; min-height: 0; }
+
+    /* Panel — slides up from bottom as drawer */
+    #panel {
+        position: fixed; bottom: 0; left: 0; right: 0;
+        width: 100% !important;
+        max-height: 70vh;
+        border-left: none;
+        border-top: 1px solid #30363d;
+        border-radius: 16px 16px 0 0;
+        z-index: 150;
+        overflow-y: auto;
+        transform: translateY(100%);
+        transition: transform 0.32s cubic-bezier(0.32,0,0.67,1);
+        padding-bottom: env(safe-area-inset-bottom);
+    }
+    #panel.open {
+        transform: translateY(0);
+    }
+
+    /* Drag handle */
+    #panel::before {
+        content: '';
+        display: block;
+        width: 40px; height: 4px;
+        background: #484f58; border-radius: 2px;
+        margin: 10px auto 6px;
+    }
+
+    /* FAB and backdrop visible on mobile */
+    #panel-fab      { display: flex; }
+    #panel-backdrop { display: block; }
+    #panel-backdrop.visible { display: block; }
+    #panel-backdrop:not(.visible) { display: none; }
+
+    /* Larger touch targets for filter buttons */
+    .f-btn { padding: 8px 0; font-size: 11px; }
+    .btn   { padding: 6px 12px; }
+
+    /* Stats grid — 4 cols on mobile */
+    #stats { grid-template-columns: 1fr 1fr 1fr 1fr; }
+    .stat-val { font-size: 15px; }
+
+    /* Instrument toggle */
+    #inst-toggle { flex-shrink: 0; }
 }
 </style>
 </head>
@@ -1630,5 +1715,29 @@ function renderBTLog(trades) {
 .tr-win  td:first-child { border-left: 2px solid #3fb950; }
 .tr-loss td:first-child { border-left: 2px solid #f85149; }
 </style>
+
+<!-- Mobile panel toggle FAB -->
+<div id="panel-backdrop" onclick="togglePanel()"></div>
+<button id="panel-fab" onclick="togglePanel()" title="Signals &amp; Filters">&#9654;</button>
+
+<script>
+// ── Mobile panel drawer ──
+function togglePanel() {
+    const panel    = document.getElementById('panel');
+    const backdrop = document.getElementById('panel-backdrop');
+    const fab      = document.getElementById('panel-fab');
+    const isOpen   = panel.classList.toggle('open');
+    backdrop.classList.toggle('visible', isOpen);
+    fab.textContent = isOpen ? '✕' : '▶';
+}
+
+// ── Service Worker registration ──
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
+    });
+}
+</script>
+
 </body>
 </html>

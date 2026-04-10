@@ -1,0 +1,26 @@
+{
+  "name": "HL-HH ES Strategy",
+  "short_name": "HL-HH",
+  "description": "HL→HH Bullish Market Structure Strategy — ES Futures & SPY 15m",
+  "start_url": "/index.html",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0d1117",
+  "theme_color": "#161b22",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'><rect width='192' height='192' rx='24' fill='%230d1117'/><polyline points='20,140 60,100 90,120 130,60 172,80' stroke='%233fb950' stroke-width='12' fill='none' stroke-linecap='round' stroke-linejoin='round'/><circle cx='130' cy='60' r='10' fill='%2300ee00'/></svg>",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'><rect width='512' height='512' rx='64' fill='%230d1117'/><polyline points='48,380 160,260 240,310 350,160 464,210' stroke='%233fb950' stroke-width='28' fill='none' stroke-linecap='round' stroke-linejoin='round'/><circle cx='350' cy='160' r='28' fill='%2300ee00'/></svg>",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["finance", "utilities"],
+  "screenshots": []
+}
