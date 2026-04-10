@@ -229,6 +229,39 @@ body {
     background: rgba(0,0,0,0.55);
 }
 
+/* ── Tradovate Live button states ── */
+.btn.tv-connected {
+    background: rgba(63,185,80,0.2);
+    border-color: #3fb950; color: #3fb950;
+    animation: tv-pulse 2s infinite;
+}
+.btn.tv-connecting { background: rgba(210,153,0,0.15); border-color: #d29922; color: #d29922; }
+.btn.tv-error      { background: rgba(248,81,73,0.15);  border-color: #f85149; color: #f85149; }
+@keyframes tv-pulse { 0%,100%{opacity:1} 50%{opacity:0.65} }
+
+/* ── Tradovate credentials modal ── */
+#tv-modal {
+    display: none; position: fixed; inset: 0; z-index: 400;
+    background: rgba(0,0,0,0.7);
+    align-items: center; justify-content: center;
+}
+#tv-modal-box {
+    background: #161b22; border: 1px solid #30363d;
+    border-radius: 12px; padding: 28px 32px;
+    width: 340px; display: flex; flex-direction: column; gap: 16px;
+}
+#tv-modal-box h2 { font-size: 15px; font-weight: 700; }
+#tv-modal-box p  { font-size: 12px; color: #7d8590; line-height: 1.6; }
+.tv-field { display: flex; flex-direction: column; gap: 5px; }
+.tv-field label { font-size: 11px; color: #7d8590; }
+.tv-field input {
+    background: #21262d; border: 1px solid #30363d;
+    border-radius: 6px; padding: 7px 10px;
+    color: #e6edf3; font-size: 13px; font-family: inherit;
+}
+.tv-field input:focus { outline: none; border-color: #58a6ff; }
+.tv-row { display: flex; gap: 8px; }
+
 /* ══ MOBILE RESPONSIVE ══════════════════════════════════════ */
 @media (max-width: 700px) {
     /* Topbar — compact */
@@ -319,6 +352,7 @@ body {
         <span id="countdown-text">5:00</span>
     </div>
     <button class="btn" onclick="manualRefresh()">Refresh Now</button>
+    <button class="btn" id="tv-btn" onclick="toggleTradovate()" title="Connect Tradovate real-time feed">&#9889; Live</button>
     <button class="btn" id="alert-btn" onclick="toggleAlerts()" title="Toggle signal alerts">&#128276; Alerts: OFF</button>
     <button class="btn" id="bt-btn" onclick="openBacktest()" style="background:rgba(88,166,255,0.1);border-color:rgba(88,166,255,0.3);color:#58a6ff;">Backtest</button>
 </div>
@@ -1247,6 +1281,294 @@ function manualRefresh() {
 }
 
 // ============================================================
+// TRADOVATE REAL-TIME FEED
+// ============================================================
+let tvToken       = null;   // access token after auth
+let tvWs          = null;   // MD WebSocket
+let tvConnected   = false;  // true when authorized + streaming
+let tvMsgId       = 1;      // monotonic frame id
+let tvChartSub    = null;   // chart subscription id
+let tvBars        = [];     // current bar array (live-updated)
+let tvLastPrice   = null;   // latest trade price
+let tvRefreshTimer = null;  // suppress Yahoo auto-refresh while live
+
+// Derive ES front-month contract (e.g. ESM6 for April 2026)
+function getESFrontMonth() {
+    const now = new Date();
+    const yr  = now.getUTCFullYear() % 10;  // single digit year
+    const mo  = now.getUTCMonth() + 1;      // 1-based
+
+    // Quarterly: H=Mar(3), M=Jun(6), U=Sep(9), Z=Dec(12)
+    // Roll: switch to next quarter in the month of expiry after ~17th
+    const quarters = [
+        { code:'H', month:3  },
+        { code:'M', month:6  },
+        { code:'U', month:9  },
+        { code:'Z', month:12 },
+    ];
+    let q = quarters.find(q => q.month > mo || (q.month === mo && now.getUTCDate() < 17));
+    if (!q) q = { code:'H', month:3 }; // wrap to next year's March (yr+1 handled separately)
+    const yearDigit = (q.month === 3 && mo >= 12) ? (yr + 1) % 10 : yr;
+    return 'ES' + q.code + yearDigit;  // e.g. ESM6
+}
+
+// POST to Tradovate demo REST API
+async function tradovateAuth(username, password) {
+    const res = await fetch('https://demo.tradovateapi.com/v1/auth/accesstokenrequest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({
+            name: username,
+            password: password,
+            appId: 'HL-HH-Scanner',
+            appVersion: '1.0',
+            cid: 0,
+            sec: '',
+        }),
+    });
+    if (!res.ok) throw new Error(`Auth HTTP ${res.status}`);
+    const data = await res.json();
+    if (data['p-ticket']) throw new Error('Two-factor required — use API key auth or disable 2FA');
+    if (!data.accessToken) throw new Error(data.errorText || 'Auth failed — check credentials');
+    return data.accessToken;
+}
+
+// Send a WebSocket frame: "endpoint\nid\n\nbody"
+function sendTV(endpoint, body) {
+    if (!tvWs || tvWs.readyState !== WebSocket.OPEN) return;
+    const id  = tvMsgId++;
+    const msg = body != null
+        ? `${endpoint}\n${id}\n\n${JSON.stringify(body)}`
+        : `${endpoint}\n${id}\n\n`;
+    tvWs.send(msg);
+}
+
+// Process an incoming Tradovate MD WebSocket message object
+function handleTVMsg(msg) {
+    const e = msg.e;
+
+    // Authorization confirmed → subscribe to chart + live quotes
+    if (e === 'authorized') {
+        const sym = getESFrontMonth();
+        console.log('[TV] Authorized. Subscribing to', sym);
+
+        // Request 15-minute chart bars (last 5 days of history)
+        const chartBody = {
+            symbol:          sym,
+            chartDescription: {
+                underlyingType: 'MinuteBar',
+                elementSize: 15,
+                elementSizeUnit: 'UnderlyingUnits',
+                withHistogram: false,
+            },
+            timeRange: {
+                asFarAsTimestamp: new Date(Date.now() - 5 * 24 * 3600 * 1000).toISOString(),
+                asMuchAsElements: 500,
+            },
+        };
+        sendTV('md/getchart', chartBody);
+
+        // Subscribe to live quote ticks
+        sendTV('md/subscribeQuote', { symbol: sym });
+
+        updateTVStatus('connected', sym + ' live');
+        tvConnected = true;
+    }
+
+    // Chart bar data (historical + live bar updates)
+    if (e === 'chart') {
+        const bars = (msg.d && msg.d.bars) ? msg.d.bars : [];
+        bars.forEach(b => {
+            const t = Math.floor(new Date(b.timestamp).getTime() / 1000);
+            const bar = {
+                time:  t,
+                open:  b.open,
+                high:  b.high,
+                low:   b.low,
+                close: b.close,
+                volume: (b.upVolume || 0) + (b.downVolume || 0),
+            };
+            // Upsert: replace existing bar at same time or append
+            const idx = tvBars.findIndex(x => x.time === t);
+            if (idx >= 0) tvBars[idx] = bar;
+            else tvBars.push(bar);
+        });
+
+        // Sort ascending, dedupe, update chart
+        tvBars.sort((a, b) => a.time - b.time);
+        _lastBars  = tvBars;
+        _lastPrice = tvLastPrice ?? tvBars.at(-1)?.close;
+        applyStrategy(tvBars, _lastPrice, false);
+    }
+
+    // Live quote tick
+    if (e === 'props' && msg.d && msg.d.entries && msg.d.entries.Trade) {
+        const trade = msg.d.entries.Trade;
+        tvLastPrice = trade.price;
+
+        // Update last bar's close + high/low in real time
+        if (tvBars.length) {
+            const last = { ...tvBars.at(-1) };
+            last.close = trade.price;
+            last.high  = Math.max(last.high, trade.price);
+            last.low   = Math.min(last.low,  trade.price);
+            tvBars[tvBars.length - 1] = last;
+        }
+
+        // Update price display
+        document.getElementById('last-price').textContent = f(trade.price, 2);
+        document.getElementById('last-update').textContent =
+            'LIVE ' + new Date().toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    }
+}
+
+// Connect: auth → open MD WebSocket → authorize
+async function connectTradovate() {
+    updateTVStatus('connecting', 'Connecting…');
+
+    const username = localStorage.getItem('tv_user');
+    const password = localStorage.getItem('tv_pass');
+    if (!username || !password) {
+        showTVModal();
+        updateTVStatus('', 'Live');
+        return;
+    }
+
+    try {
+        tvToken = await tradovateAuth(username, password);
+    } catch (err) {
+        updateTVStatus('error', 'Auth failed');
+        console.error('[TV] Auth error:', err.message);
+        // Show modal so user can re-enter credentials
+        document.getElementById('tv-modal-error').textContent = err.message;
+        document.getElementById('tv-modal-error').style.display = 'block';
+        showTVModal();
+        return;
+    }
+
+    const ws = new WebSocket('wss://md-demo.tradovateapi.com/v1/websocket');
+    tvWs = ws;
+
+    ws.onopen = () => {
+        console.log('[TV] MD WebSocket open');
+        updateTVStatus('connecting', 'Authorizing…');
+    };
+
+    ws.onmessage = (event) => {
+        const raw = event.data;
+
+        // Protocol frames: 'o'=open, 'h'=heartbeat, 'c'=close, 'a[...]'=messages
+        if (raw === 'o') {
+            // Server ready — send authorization
+            sendTV('authorize', { token: tvToken });
+            return;
+        }
+        if (raw === 'h') {
+            // Heartbeat — respond with empty array to keep alive
+            ws.send('[]');
+            return;
+        }
+        if (raw.startsWith('a')) {
+            try {
+                const msgs = JSON.parse(raw.slice(1)); // strip leading 'a'
+                msgs.forEach(m => {
+                    try {
+                        const obj = typeof m === 'string' ? JSON.parse(m) : m;
+                        handleTVMsg(obj);
+                    } catch(e) { /* ignore malformed frames */ }
+                });
+            } catch(e) { console.warn('[TV] parse error', e); }
+        }
+    };
+
+    ws.onclose = (ev) => {
+        console.log('[TV] WS closed', ev.code, ev.reason);
+        if (tvConnected) {
+            // Unexpected close — resume Yahoo Finance
+            tvConnected = false;
+            updateTVStatus('', 'Live');
+            resumeYahooRefresh();
+        }
+    };
+
+    ws.onerror = (err) => {
+        console.error('[TV] WS error', err);
+        updateTVStatus('error', 'Error');
+    };
+
+    // Suppress Yahoo auto-refresh while Tradovate is active
+    if (countdownTimer) clearInterval(countdownTimer);
+    ringEl.style.display  = 'none';
+    countEl.style.display = 'none';
+}
+
+function disconnectTradovate() {
+    tvConnected = false;
+    tvBars      = [];
+    tvLastPrice = null;
+    if (tvWs) {
+        tvWs.onclose = null; // prevent triggering resumeYahooRefresh on deliberate close
+        tvWs.close();
+        tvWs = null;
+    }
+    tvToken    = null;
+    tvMsgId    = 1;
+    updateTVStatus('', 'Live');
+    resumeYahooRefresh();
+}
+
+function resumeYahooRefresh() {
+    // Show countdown ring again
+    ringEl.style.display  = '';
+    countEl.style.display = '';
+    // Reload fresh Yahoo data
+    loadData();
+}
+
+function updateTVStatus(state, label) {
+    const btn = document.getElementById('tv-btn');
+    btn.className = 'btn' + (state ? ' tv-' + state : '');
+    btn.textContent = '⚡ ' + (label || 'Live');
+}
+
+// Modal helpers
+function showTVModal() {
+    // Pre-fill saved credentials
+    const u = localStorage.getItem('tv_user');
+    const p = localStorage.getItem('tv_pass');
+    if (u) document.getElementById('tv-user').value = u;
+    if (p) document.getElementById('tv-pass').value = p;
+    document.getElementById('tv-modal-error').style.display = 'none';
+    document.getElementById('tv-modal').style.display = 'flex';
+}
+
+function hideTVModal() {
+    document.getElementById('tv-modal').style.display = 'none';
+}
+
+function saveTVCreds() {
+    const u = document.getElementById('tv-user').value.trim();
+    const p = document.getElementById('tv-pass').value;
+    if (!u || !p) {
+        document.getElementById('tv-modal-error').textContent = 'Please enter both username and password.';
+        document.getElementById('tv-modal-error').style.display = 'block';
+        return;
+    }
+    localStorage.setItem('tv_user', u);
+    localStorage.setItem('tv_pass', p);
+    hideTVModal();
+    connectTradovate();
+}
+
+function toggleTradovate() {
+    if (tvConnected || (tvWs && tvWs.readyState === WebSocket.CONNECTING)) {
+        disconnectTradovate();
+    } else {
+        connectTradovate();
+    }
+}
+
+// ============================================================
 // BOOT
 // ============================================================
 updateFilterCount();
@@ -1729,6 +2051,32 @@ function renderBTLog(trades) {
 .tr-win  td:first-child { border-left: 2px solid #3fb950; }
 .tr-loss td:first-child { border-left: 2px solid #f85149; }
 </style>
+
+<!-- Tradovate credentials modal -->
+<div id="tv-modal">
+    <div id="tv-modal-box">
+        <h2>&#9889; Connect Real-Time Feed</h2>
+        <p>Enter your <strong>Tradovate demo account</strong> credentials.<br>
+           Free account at <strong>tradovate.com</strong> — no deposit required.<br>
+           Credentials are saved locally and never sent to GitHub.</p>
+        <div class="tv-field">
+            <label>Username</label>
+            <input id="tv-user" type="text" placeholder="your@email.com" autocomplete="username">
+        </div>
+        <div class="tv-field">
+            <label>Password</label>
+            <input id="tv-pass" type="password" placeholder="••••••••" autocomplete="current-password">
+        </div>
+        <div id="tv-modal-error" style="font-size:12px;color:#f85149;display:none;"></div>
+        <div class="tv-row">
+            <button class="btn" onclick="hideTVModal()" style="flex:1;">Cancel</button>
+            <button class="btn" onclick="saveTVCreds()"
+                style="flex:2;background:rgba(63,185,80,0.15);border-color:rgba(63,185,80,0.4);color:#3fb950;">
+                Connect
+            </button>
+        </div>
+    </div>
+</div>
 
 <!-- Mobile panel toggle FAB -->
 <div id="panel-backdrop" onclick="togglePanel()"></div>
