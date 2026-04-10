@@ -222,6 +222,7 @@ body {
         <span id="countdown-text">5:00</span>
     </div>
     <button class="btn" onclick="manualRefresh()">Refresh Now</button>
+    <button class="btn" id="bt-btn" onclick="openBacktest()" style="background:rgba(88,166,255,0.1);border-color:rgba(88,166,255,0.3);color:#58a6ff;">Backtest</button>
 </div>
 
 <!-- Main -->
@@ -850,6 +851,311 @@ function manualRefresh() {
 // ============================================================
 updateFilterCount();
 loadData();
+
+// ============================================================
+// BACKTEST ENGINE
+// ============================================================
+
+// Fetch 60 days of 15m data (more history than the live view)
+async function fetchBacktestData() {
+    const urls = [
+        'https://query1.finance.yahoo.com/v8/finance/chart/ES=F?interval=15m&range=60d&includePrePost=false',
+        'https://query2.finance.yahoo.com/v8/finance/chart/ES=F?interval=15m&range=60d&includePrePost=false',
+        'https://query1.finance.yahoo.com/v8/finance/chart/ES=F?interval=15m&range=30d&includePrePost=false',
+    ];
+
+    const proxies = [
+        u => u,
+        u => 'https://corsproxy.io/?' + encodeURIComponent(u),
+        u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+    ];
+
+    const errors = [];
+    for (const base of urls) {
+        for (const wrap of proxies) {
+            try {
+                const r = await fetchWithTimeout(wrap(base), 25000);
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                const data = parseYF(await r.json());
+                if (data.bars.length > 100) return data; // enough bars to backtest
+            } catch (e) { errors.push(e.message); }
+        }
+    }
+    throw new Error('Could not fetch backtest data.\n' + errors.slice(0,3).join(' | '));
+}
+
+// Simulate trades from strategy signals
+function runBacktest(bars) {
+    const { signals } = runStrategy(bars);
+    const trades = [];
+
+    for (const sig of signals) {
+        const sigIdx = bars.findIndex(b => b.time === sig.time);
+        if (sigIdx < 0 || sigIdx + 1 >= bars.length) continue;
+
+        const entryBar   = bars[sigIdx + 1];
+        const entry      = entryBar.open;
+        const stop       = sig.stop;
+        const riskPts    = entry - stop;
+        if (riskPts <= 0) continue;
+
+        const tp         = entry + riskPts * CFG.rrRatio;
+        const MAX_BARS   = 25;
+
+        let exitPrice = null, exitTime = null, result = null;
+
+        for (let j = sigIdx + 1; j < Math.min(sigIdx + 1 + MAX_BARS, bars.length); j++) {
+            const b = bars[j];
+            // Check SL first (conservative — assumes worst case in same bar)
+            if (b.low <= stop) {
+                exitPrice = stop; exitTime = b.time; result = 'loss'; break;
+            }
+            if (b.high >= tp) {
+                exitPrice = tp; exitTime = b.time; result = 'win'; break;
+            }
+        }
+
+        // Timeout — close at last bar close
+        if (!result) {
+            const last = bars[Math.min(sigIdx + MAX_BARS, bars.length - 1)];
+            exitPrice = last.close;
+            exitTime  = last.time;
+            result    = exitPrice >= entry ? 'win' : 'loss';
+        }
+
+        const pnlR = (exitPrice - entry) / riskPts;
+
+        trades.push({
+            type: sig.type, entryTime: entryBar.time, exitTime,
+            entry, exit: exitPrice, stop, tp, result, pnlR,
+        });
+    }
+    return trades;
+}
+
+// Calculate summary metrics
+function calcMetrics(trades) {
+    if (!trades.length) return null;
+    const wins   = trades.filter(t => t.result === 'win');
+    const losses = trades.filter(t => t.result === 'loss');
+    const grossW = wins.reduce((s, t) => s + t.pnlR, 0);
+    const grossL = Math.abs(losses.reduce((s, t) => s + t.pnlR, 0));
+    const totalR = trades.reduce((s, t) => s + t.pnlR, 0);
+
+    // Max drawdown in R
+    let peak = 0, maxDD = 0, cumR = 0;
+    for (const t of trades) {
+        cumR += t.pnlR;
+        if (cumR > peak) peak = cumR;
+        maxDD = Math.max(maxDD, peak - cumR);
+    }
+
+    return {
+        total:    trades.length,
+        wins:     wins.length,
+        losses:   losses.length,
+        winRate:  (wins.length / trades.length * 100).toFixed(1),
+        avgWinR:  wins.length   ? (grossW / wins.length).toFixed(2)   : '0.00',
+        avgLossR: losses.length ? (grossL / losses.length).toFixed(2) : '0.00',
+        pf:       grossL > 0    ? (grossW / grossL).toFixed(2)        : grossW > 0 ? '∞' : '0.00',
+        totalR:   totalR.toFixed(2),
+        maxDD:    maxDD.toFixed(2),
+    };
+}
+
+// Build cumulative R curve for the equity chart
+function buildCurve(trades) {
+    let cum = 0;
+    // Start point
+    const pts = [{ time: trades[0].entryTime, value: 0 }];
+    for (const t of trades) {
+        cum += t.pnlR;
+        pts.push({ time: t.exitTime, value: parseFloat(cum.toFixed(3)) });
+    }
+    return pts;
+}
+
+// ── Backtest overlay state ──
+let btChart = null, btLineSeries = null;
+
+function openBacktest() {
+    const overlay = document.getElementById('bt-overlay');
+    overlay.style.display = 'flex';
+    document.getElementById('bt-status').textContent  = 'Fetching 60 days of data...';
+    document.getElementById('bt-metrics').innerHTML   = '';
+    document.getElementById('bt-log-body').innerHTML  = '';
+    document.getElementById('bt-chart-wrap').style.display = 'none';
+
+    fetchBacktestData().then(({ bars }) => {
+        const trades  = runBacktest(bars);
+        const metrics = calcMetrics(trades);
+
+        if (!trades.length || !metrics) {
+            document.getElementById('bt-status').textContent = 'No trades found. Try disabling some filters.';
+            return;
+        }
+
+        document.getElementById('bt-status').textContent = '';
+        renderBTMetrics(metrics);
+        renderBTChart(trades);
+        renderBTLog(trades);
+
+    }).catch(err => {
+        document.getElementById('bt-status').textContent = 'Error: ' + err.message;
+    });
+}
+
+function closeBacktest() {
+    document.getElementById('bt-overlay').style.display = 'none';
+}
+
+function renderBTMetrics(m) {
+    const wr   = parseFloat(m.winRate);
+    const pf   = parseFloat(m.pf);
+    const totalR = parseFloat(m.totalR);
+    const wrColor  = wr  >= 50 ? '#3fb950' : '#f85149';
+    const pfColor  = pf  >= 1  ? '#3fb950' : '#f85149';
+    const rColor   = totalR >= 0 ? '#3fb950' : '#f85149';
+
+    document.getElementById('bt-metrics').innerHTML = `
+        <div class="bt-stat"><div class="bt-stat-label">Total Trades</div><div class="bt-stat-val">${m.total}</div></div>
+        <div class="bt-stat"><div class="bt-stat-label">Win Rate</div><div class="bt-stat-val" style="color:${wrColor}">${m.winRate}%</div></div>
+        <div class="bt-stat"><div class="bt-stat-label">Profit Factor</div><div class="bt-stat-val" style="color:${pfColor}">${m.pf}</div></div>
+        <div class="bt-stat"><div class="bt-stat-label">Total R</div><div class="bt-stat-val" style="color:${rColor}">${totalR >= 0 ? '+' : ''}${m.totalR}R</div></div>
+        <div class="bt-stat"><div class="bt-stat-label">Avg Win</div><div class="bt-stat-val c-green">+${m.avgWinR}R</div></div>
+        <div class="bt-stat"><div class="bt-stat-label">Avg Loss</div><div class="bt-stat-val c-red">-${m.avgLossR}R</div></div>
+        <div class="bt-stat"><div class="bt-stat-label">Max Drawdown</div><div class="bt-stat-val c-red">-${m.maxDD}R</div></div>
+        <div class="bt-stat"><div class="bt-stat-label">Wins / Losses</div><div class="bt-stat-val">${m.wins} / ${m.losses}</div></div>
+    `;
+}
+
+function renderBTChart(trades) {
+    const wrap = document.getElementById('bt-chart-wrap');
+    wrap.style.display = 'block';
+
+    if (!btChart) {
+        btChart = LightweightCharts.createChart(document.getElementById('bt-chart'), {
+            layout: { background: { color: '#0d1117' }, textColor: '#7d8590' },
+            grid:   { vertLines: { color: '#161b22' }, horzLines: { color: '#1c2128' } },
+            rightPriceScale: { borderColor: '#30363d' },
+            timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false },
+            crosshair: {
+                vertLine: { color: '#30363d', labelBackgroundColor: '#21262d' },
+                horzLine: { color: '#30363d', labelBackgroundColor: '#21262d' },
+            },
+            localization: {
+                timeFormatter: (unix) => new Date(unix * 1000).toLocaleString('en-US', {
+                    timeZone:'America/New_York', month:'2-digit', day:'2-digit',
+                    hour:'2-digit', minute:'2-digit', hour12:false,
+                }),
+                priceFormatter: (p) => p.toFixed(2) + 'R',
+            },
+        });
+
+        btLineSeries = btChart.addLineSeries({
+            color: '#3fb950', lineWidth: 2,
+            priceLineVisible: false, lastValueVisible: true,
+        });
+
+        // Zero line
+        btChart.addLineSeries({
+            color: 'rgba(255,255,255,0.1)', lineWidth: 1,
+            priceLineVisible: false, lastValueVisible: false,
+            crosshairMarkerVisible: false,
+        }).setData([ { time: trades[0].entryTime, value: 0 }, { time: trades.at(-1).exitTime, value: 0 } ]);
+    }
+
+    const curve = buildCurve(trades);
+    // Colour the line red when below zero
+    const totalR = parseFloat(curve.at(-1).value);
+    btLineSeries.applyOptions({ color: totalR >= 0 ? '#3fb950' : '#f85149' });
+    btLineSeries.setData(curve);
+    btChart.applyOptions({ width: document.getElementById('bt-chart').clientWidth, height: 220 });
+    btChart.timeScale().fitContent();
+}
+
+function renderBTLog(trades) {
+    document.getElementById('bt-log-body').innerHTML = [...trades].reverse().map((t, i) => `
+        <tr class="${t.result === 'win' ? 'tr-win' : 'tr-loss'}">
+            <td>${trades.length - i}</td>
+            <td><span class="sig-type ${t.type === 'Breakout' ? 'bo' : 'rt'}" style="font-size:10px;padding:1px 5px;">${t.type === 'Breakout' ? 'BO' : 'RT'}</span></td>
+            <td>${fmtTime(t.entryTime)}</td>
+            <td>${f(t.entry)}</td>
+            <td>${f(t.exit)}</td>
+            <td class="c-red">${f(t.stop)}</td>
+            <td class="c-green">${f(t.tp)}</td>
+            <td style="color:${t.result==='win'?'#3fb950':'#f85149'};font-weight:700">
+                ${t.pnlR >= 0 ? '+' : ''}${t.pnlR.toFixed(2)}R
+            </td>
+            <td style="color:${t.result==='win'?'#3fb950':'#f85149'}">
+                ${t.result === 'win' ? 'WIN' : 'LOSS'}
+            </td>
+        </tr>
+    `).join('');
+}
 </script>
+
+<!-- ═══════════════════════════════════════════════════════════
+     BACKTEST OVERLAY
+═══════════════════════════════════════════════════════════ -->
+<div id="bt-overlay" style="display:none;position:fixed;inset:0;background:#0d1117;z-index:200;flex-direction:column;overflow:hidden;">
+
+    <!-- Header -->
+    <div style="display:flex;align-items:center;gap:12px;padding:10px 16px;background:#161b22;border-bottom:1px solid #30363d;flex-shrink:0;">
+        <button onclick="closeBacktest()" class="btn" style="padding:4px 10px;">&#8592; Live</button>
+        <span style="font-size:14px;font-weight:700;">Backtest Results</span>
+        <span style="font-size:11px;color:#7d8590;">ES Futures 15m &mdash; Last 60 Days &mdash; Filters Applied</span>
+        <div id="bt-status" style="color:#d29922;font-size:12px;"></div>
+    </div>
+
+    <!-- Metrics grid -->
+    <div id="bt-metrics" style="display:grid;grid-template-columns:repeat(8,1fr);gap:1px;background:#21262d;border-bottom:1px solid #30363d;flex-shrink:0;"></div>
+
+    <!-- Equity curve -->
+    <div id="bt-chart-wrap" style="display:none;padding:12px 16px 0;flex-shrink:0;">
+        <div style="font-size:10px;color:#7d8590;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">Equity Curve (R)</div>
+        <div id="bt-chart" style="width:100%;height:220px;"></div>
+    </div>
+
+    <!-- Trade log -->
+    <div style="flex:1;overflow-y:auto;padding:12px 16px;">
+        <div style="font-size:10px;color:#7d8590;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Trade Log</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead>
+                <tr style="color:#7d8590;font-size:10px;text-transform:uppercase;letter-spacing:.05em;">
+                    <th style="padding:4px 8px;text-align:left;border-bottom:1px solid #30363d;">#</th>
+                    <th style="padding:4px 8px;text-align:left;border-bottom:1px solid #30363d;">Type</th>
+                    <th style="padding:4px 8px;text-align:left;border-bottom:1px solid #30363d;">Entry Time</th>
+                    <th style="padding:4px 8px;text-align:right;border-bottom:1px solid #30363d;">Entry</th>
+                    <th style="padding:4px 8px;text-align:right;border-bottom:1px solid #30363d;">Exit</th>
+                    <th style="padding:4px 8px;text-align:right;border-bottom:1px solid #30363d;">SL</th>
+                    <th style="padding:4px 8px;text-align:right;border-bottom:1px solid #30363d;">TP</th>
+                    <th style="padding:4px 8px;text-align:right;border-bottom:1px solid #30363d;">R</th>
+                    <th style="padding:4px 8px;text-align:left;border-bottom:1px solid #30363d;">Result</th>
+                </tr>
+            </thead>
+            <tbody id="bt-log-body"></tbody>
+        </table>
+    </div>
+</div>
+
+<style>
+.bt-stat {
+    background: #161b22; padding: 10px 12px;
+}
+.bt-stat-label {
+    font-size: 10px; color: #7d8590;
+    text-transform: uppercase; letter-spacing: .06em; margin-bottom: 3px;
+}
+.bt-stat-val {
+    font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums;
+}
+#bt-log-body tr { border-bottom: 1px solid #1c2128; }
+#bt-log-body tr:hover { background: #1c2128; }
+#bt-log-body td { padding: 6px 8px; font-variant-numeric: tabular-nums; }
+#bt-log-body td:nth-child(n+4) { text-align: right; }
+.tr-win  td:first-child { border-left: 2px solid #3fb950; }
+.tr-loss td:first-child { border-left: 2px solid #f85149; }
+</style>
 </body>
 </html>
