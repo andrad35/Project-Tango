@@ -1287,10 +1287,9 @@ let tvToken       = null;   // access token after auth
 let tvWs          = null;   // MD WebSocket
 let tvConnected   = false;  // true when authorized + streaming
 let tvMsgId       = 1;      // monotonic frame id
-let tvChartSub    = null;   // chart subscription id
+let tvChartSub    = null;   // chart subscription id (from md/getchart response)
 let tvBars        = [];     // current bar array (live-updated)
 let tvLastPrice   = null;   // latest trade price
-let tvRefreshTimer = null;  // suppress Yahoo auto-refresh while live
 
 // Derive ES front-month contract (e.g. ESM6 for April 2026)
 function getESFrontMonth() {
@@ -1377,6 +1376,8 @@ function handleTVMsg(msg) {
 
     // Chart bar data (historical + live bar updates)
     if (e === 'chart') {
+        // Capture subscription ID on first chart event so we can cancel cleanly
+        if (tvChartSub === null && msg.d && msg.d.id != null) tvChartSub = msg.d.id;
         const bars = (msg.d && msg.d.bars) ? msg.d.bars : [];
         bars.forEach(b => {
             const t = Math.floor(new Date(b.timestamp).getTime() / 1000);
@@ -1507,6 +1508,11 @@ function disconnectTradovate() {
     tvBars      = [];
     tvLastPrice = null;
     if (tvWs) {
+        // Cancel chart subscription before closing so server cleans up immediately
+        if (tvChartSub !== null) {
+            sendTV('md/cancelChart', { subscriptionId: tvChartSub });
+            tvChartSub = null;
+        }
         tvWs.onclose = null; // prevent triggering resumeYahooRefresh on deliberate close
         tvWs.close();
         tvWs = null;
