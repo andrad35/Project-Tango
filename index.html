@@ -274,7 +274,7 @@ body {
         <div id="filter-section">
             <div id="filter-title">
                 <span>Signal Filters</span>
-                <span id="filter-count" class="c-green">9 / 9 on</span>
+                <span id="filter-count" class="c-green">10 / 10 on</span>
             </div>
             <div id="filter-grid">
                 <button class="f-btn on" id="fb-rth"       onclick="toggleFilter('rth')">RTH Only</button>
@@ -283,9 +283,10 @@ body {
                 <button class="f-btn on" id="fb-volume"    onclick="toggleFilter('volume')">Volume</button>
                 <button class="f-btn on" id="fb-structure" onclick="toggleFilter('minStructure')">Structure</button>
                 <button class="f-btn on" id="fb-atr"       onclick="toggleFilter('minATR')">Min ATR</button>
-                <button class="f-btn on" id="fb-adx"       onclick="toggleFilter('adx')">ADX &gt;20</button>
+                <button class="f-btn on" id="fb-adx"       onclick="toggleFilter('adx')">ADX &gt;22</button>
                 <button class="f-btn on" id="fb-vwap"      onclick="toggleFilter('vwap')">VWAP</button>
                 <button class="f-btn on" id="fb-session"   onclick="toggleFilter('sessionHours')">Sess Hrs</button>
+                <button class="f-btn on" id="fb-green"     onclick="toggleFilter('greenCandle')" style="grid-column:span 3;">Green Candle</button>
             </div>
         </div>
 
@@ -342,13 +343,13 @@ const CFG = {
 
         // ── New filters targeting 60% win rate ──
         adx:            true,   // ADX > threshold = trending market (not ranging/choppy)
-        adxThreshold:   20,     // standard trend strength threshold
+        adxThreshold:   22,     // slightly tightened for 1H timeframe (was 20)
         adxLength:      14,
         vwap:           true,   // price above daily VWAP = bullish institutional bias
         sessionHours:   true,   // high-probability hours only (open + power hour)
                                 //   Opening: 9:30–11:30 AM ET (directional momentum)
                                 //   Power hour: 2:00–4:00 PM ET (EOD positioning)
-
+        greenCandle:    true,   // entry bar must close above open (bullish conviction)
     },
 };
 
@@ -657,7 +658,8 @@ function runStrategy(bars) {
         const adxOk      = !F.adx          || (adxArr[i] !== null && adxArr[i] >= F.adxThreshold);
         const vwapOk     = !F.vwap         || (vwap[i] !== null && bar.close > vwap[i]);
         const sessionOk  = !F.sessionHours || isSessionHour(bar.time);
-        const allFiltersOk = rthOk && emaOk && closeOk && volumeOk && atrOk && adxOk && vwapOk && sessionOk;
+        const greenOk    = !F.greenCandle  || bar.close > bar.open;
+        const allFiltersOk = rthOk && emaOk && closeOk && volumeOk && atrOk && adxOk && vwapOk && sessionOk && greenOk;
 
         // ── Option A: Breakout ──
         const isBreakout = setupActive && !breakoutFired && breakoutLevel !== null && bar.close > breakoutLevel;
@@ -672,7 +674,7 @@ function runStrategy(bars) {
                     color:'#00ee00', shape:'arrowUp', text:'BUY BO', size:2 });
                 signals.push({
                     type:'Breakout', time:bar.time, price:bar.close, stop, tp,
-                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk),
+                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk, greenOk),
                 });
             } else {
                 // Filtered out — show a faint grey marker so user can see what was skipped
@@ -705,7 +707,7 @@ function runStrategy(bars) {
                     color:'#00ccff', shape:'arrowUp', text:'BUY RT', size:2 });
                 signals.push({
                     type:'Retest', time:bar.time, price:bar.close, stop, tp,
-                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk),
+                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk, greenOk),
                 });
             } else {
                 filteredCount++;
@@ -730,7 +732,7 @@ function runStrategy(bars) {
 }
 
 // Build a list of which filters passed (for signal tooltip)
-function buildTags(rth, ema, close, vol, atr, adx, vwap, session) {
+function buildTags(rth, ema, close, vol, atr, adx, vwap, session, green) {
     const tags = [];
     if (CFG.filters.rth          && rth)    tags.push('RTH');
     if (CFG.filters.ema          && ema)    tags.push('EMA');
@@ -740,6 +742,7 @@ function buildTags(rth, ema, close, vol, atr, adx, vwap, session) {
     if (CFG.filters.adx          && adx)    tags.push('ADX');
     if (CFG.filters.vwap         && vwap)   tags.push('VWAP');
     if (CFG.filters.sessionHours && session)tags.push('Session');
+    if (CFG.filters.greenCandle  && green)  tags.push('Green');
     return tags;
 }
 
@@ -1015,10 +1018,10 @@ function renderSignals(signals) {
 
 function updateFilterCount() {
     const F = CFG.filters;
-    const active = [F.rth, F.ema, F.strongClose, F.volume, F.minStructure, F.minATR, F.adx, F.vwap, F.sessionHours].filter(Boolean).length;
+    const active = [F.rth, F.ema, F.strongClose, F.volume, F.minStructure, F.minATR, F.adx, F.vwap, F.sessionHours, F.greenCandle].filter(Boolean).length;
     const el = document.getElementById('filter-count');
-    el.textContent = `${active} / 9 on`;
-    el.className = active === 9 ? 'c-green' : active >= 5 ? 'c-yellow' : 'c-red';
+    el.textContent = `${active} / 10 on`;
+    el.className = active === 10 ? 'c-green' : active >= 6 ? 'c-yellow' : 'c-red';
 }
 
 // ============================================================
@@ -1034,7 +1037,7 @@ function toggleFilter(key) {
     const idMap = {
         rth:'fb-rth', ema:'fb-ema', strongClose:'fb-close',
         volume:'fb-volume', minStructure:'fb-structure', minATR:'fb-atr',
-        adx:'fb-adx', vwap:'fb-vwap', sessionHours:'fb-session',
+        adx:'fb-adx', vwap:'fb-vwap', sessionHours:'fb-session', greenCandle:'fb-green',
     };
     const btn = document.getElementById(idMap[key]);
     if (btn) btn.className = 'f-btn ' + (CFG.filters[key] ? 'on' : '');
