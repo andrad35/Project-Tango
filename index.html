@@ -70,6 +70,11 @@ body {
 }
 .btn:hover  { background: #30363d; }
 .btn:active { background: #161b22; }
+.btn.alert-on {
+    background: rgba(210,153,0,0.15);
+    border-color: rgba(210,153,0,0.5);
+    color: #d29922;
+}
 
 #refresh-flash {
     position: fixed; inset: 0;
@@ -222,6 +227,7 @@ body {
         <span id="countdown-text">5:00</span>
     </div>
     <button class="btn" onclick="manualRefresh()">Refresh Now</button>
+    <button class="btn" id="alert-btn" onclick="toggleAlerts()" title="Toggle signal alerts">&#128276; Alerts: OFF</button>
     <button class="btn" id="bt-btn" onclick="openBacktest()" style="background:rgba(88,166,255,0.1);border-color:rgba(88,166,255,0.3);color:#58a6ff;">Backtest</button>
 </div>
 
@@ -793,6 +799,92 @@ function parseYF(json) {
 }
 
 // ============================================================
+// SIGNAL ALERTS
+// ============================================================
+let alertsEnabled = false;
+const alertedSignals = new Set(); // tracks "type:time" keys already alerted
+
+function toggleAlerts() {
+    if (!alertsEnabled) {
+        // Request notification permission first
+        if ('Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission().then(p => {
+                if (p === 'granted') enableAlerts();
+                else showAlertDenied();
+            });
+        } else if ('Notification' in window && Notification.permission === 'denied') {
+            showAlertDenied();
+        } else {
+            enableAlerts();
+        }
+    } else {
+        alertsEnabled = false;
+        const btn = document.getElementById('alert-btn');
+        btn.textContent = '\uD83D\uDD14 Alerts: OFF';
+        btn.className = 'btn';
+    }
+}
+
+function enableAlerts() {
+    alertsEnabled = true;
+    const btn = document.getElementById('alert-btn');
+    btn.textContent = '\uD83D\uDD14 Alerts: ON';
+    btn.className = 'btn alert-on';
+    // Seed existing signals so we don't alert on history
+    if (_lastBars) {
+        const { signals } = runStrategy(_lastBars);
+        signals.forEach(s => alertedSignals.add(s.type + ':' + s.time));
+    }
+}
+
+function showAlertDenied() {
+    alert('Browser notifications are blocked.\n\nTo enable: click the lock icon in the address bar → Notifications → Allow, then try again.');
+}
+
+// Plays a short two-tone chime using Web Audio API (no file needed)
+function playAlertSound(type) {
+    try {
+        const ctx  = new (window.AudioContext || window.webkitAudioContext)();
+        const freq1 = type === 'Breakout' ? 880 : 660;
+        const freq2 = type === 'Breakout' ? 1100 : 880;
+
+        [[freq1, 0, 0.12], [freq2, 0.13, 0.12]].forEach(([freq, start, dur]) => {
+            const osc  = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain); gain.connect(ctx.destination);
+            osc.type = 'sine';
+            osc.frequency.value = freq;
+            gain.gain.setValueAtTime(0, ctx.currentTime + start);
+            gain.gain.linearRampToValueAtTime(0.25, ctx.currentTime + start + 0.02);
+            gain.gain.linearRampToValueAtTime(0, ctx.currentTime + start + dur);
+            osc.start(ctx.currentTime + start);
+            osc.stop(ctx.currentTime + start + dur + 0.05);
+        });
+    } catch (e) { /* audio blocked — silent fail */ }
+}
+
+function fireAlerts(signals) {
+    if (!alertsEnabled) return;
+    signals.forEach(s => {
+        const key = s.type + ':' + s.time;
+        if (alertedSignals.has(key)) return;
+        alertedSignals.add(key);
+
+        // Browser notification
+        if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification(s.type === 'Breakout' ? '🟢 BUY BREAKOUT — ES 15m' : '🔵 BUY RETEST — ES 15m', {
+                body: `Price: ${s.price.toFixed(2)}  |  SL: ${s.stop.toFixed(2)}  |  TP: ${s.tp.toFixed(2)}`,
+                tag:  key,
+                requireInteraction: false,
+            });
+        }
+
+        // Audio chime
+        playAlertSound(s.type);
+    });
+}
+
+// ============================================================
 // COUNTDOWN RING
 // ============================================================
 const REFRESH_SECONDS = 5 * 60;
@@ -924,6 +1016,7 @@ function applyStrategy(bars, lastPrice, fitContent) {
     document.getElementById('hl-count').textContent   = `HL Setups: ${hlCount}`;
 
     renderSignals(signals);
+    if (!fitContent) fireAlerts(signals); // only alert on auto-refresh, not initial load
 }
 
 // ============================================================
