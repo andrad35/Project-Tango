@@ -1231,15 +1231,18 @@ function calcMetrics(trades) {
 }
 
 // Build cumulative R curve for the equity chart
+// Uses a Map to deduplicate timestamps — LW Charts requires strictly unique, ascending times
 function buildCurve(trades) {
     let cum = 0;
-    // Start point
-    const pts = [{ time: trades[0].entryTime, value: 0 }];
+    const map = new Map();
+    map.set(trades[0].entryTime, 0); // origin point
     for (const t of trades) {
         cum += t.pnlR;
-        pts.push({ time: t.exitTime, value: parseFloat(cum.toFixed(3)) });
+        map.set(t.exitTime, parseFloat(cum.toFixed(3))); // last write wins for same timestamp
     }
-    return pts;
+    return [...map.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([time, value]) => ({ time, value }));
 }
 
 // ── Backtest overlay state ──
@@ -1321,6 +1324,7 @@ function openBacktest() {
 
 function closeBacktest() {
     document.getElementById('bt-overlay').style.display = 'none';
+    if (btChart) { btChart.remove(); btChart = null; btLineSeries = null; }
 }
 
 function renderBTMetrics(m) {
