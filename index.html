@@ -274,7 +274,7 @@ body {
         <div id="filter-section">
             <div id="filter-title">
                 <span>Signal Filters</span>
-                <span id="filter-count" class="c-green">11 / 11 on</span>
+                <span id="filter-count" class="c-green">9 / 9 on</span>
             </div>
             <div id="filter-grid">
                 <button class="f-btn on" id="fb-rth"       onclick="toggleFilter('rth')">RTH Only</button>
@@ -286,8 +286,6 @@ body {
                 <button class="f-btn on" id="fb-adx"       onclick="toggleFilter('adx')">ADX &gt;20</button>
                 <button class="f-btn on" id="fb-vwap"      onclick="toggleFilter('vwap')">VWAP</button>
                 <button class="f-btn on" id="fb-session"   onclick="toggleFilter('sessionHours')">Sess Hrs</button>
-                <button class="f-btn on" id="fb-green"     onclick="toggleFilter('greenCandle')">Green Bar</button>
-                <button class="f-btn on" id="fb-brkstr"    onclick="toggleFilter('brkStrength')" style="grid-column:span 2;">Brk Strength</button>
             </div>
         </div>
 
@@ -331,10 +329,10 @@ const CFG = {
         rth:            true,   // RTH session only (9:30 AM–4:00 PM ET)
         ema:            true,   // price must be above EMA 50 at signal bar
         emaLength:      50,
-        strongClose:    true,   // breakout/retest candle closes in top 28% of range
-        closeThreshold: 0.72,   // 0 = bottom, 1 = top of candle
+        strongClose:    true,   // breakout/retest candle closes in top 35% of range
+        closeThreshold: 0.65,   // 0 = bottom, 1 = top of candle
         volume:         true,   // signal candle volume > avg x multiplier
-        volumeMult:     1.25,   // 25% above average
+        volumeMult:     1.1,    // 10% above average
         volumeAvgLen:   20,
         minStructure:   true,   // HL must be meaningfully higher than prev low
         structureMult:  0.25,   // must be >= 0.25 ATR above prev low
@@ -344,17 +342,13 @@ const CFG = {
 
         // ── New filters targeting 60% win rate ──
         adx:            true,   // ADX > threshold = trending market (not ranging/choppy)
-        adxThreshold:   25,     // tightened: require stronger trend (was 20)
+        adxThreshold:   20,     // standard trend strength threshold
         adxLength:      14,
         vwap:           true,   // price above daily VWAP = bullish institutional bias
         sessionHours:   true,   // high-probability hours only (open + power hour)
                                 //   Opening: 9:30–11:30 AM ET (directional momentum)
                                 //   Power hour: 2:00–4:00 PM ET (EOD positioning)
 
-        // ── Signal conviction filters (targeting 75% win rate) ──
-        greenCandle:      true,  // entry bar must close above open (bullish candle)
-        brkStrength:      true,  // breakout close must be >= 0.15 ATR above broken level
-        brkStrengthMult:  0.15,
     },
 };
 
@@ -663,17 +657,13 @@ function runStrategy(bars) {
         const adxOk      = !F.adx          || (adxArr[i] !== null && adxArr[i] >= F.adxThreshold);
         const vwapOk     = !F.vwap         || (vwap[i] !== null && bar.close > vwap[i]);
         const sessionOk  = !F.sessionHours || isSessionHour(bar.time);
-        const greenOk    = !F.greenCandle  || bar.close > bar.open;
-        const baseFiltersOk = rthOk && emaOk && closeOk && volumeOk && atrOk && adxOk && vwapOk && sessionOk && greenOk;
+        const allFiltersOk = rthOk && emaOk && closeOk && volumeOk && atrOk && adxOk && vwapOk && sessionOk;
 
         // ── Option A: Breakout ──
         const isBreakout = setupActive && !breakoutFired && breakoutLevel !== null && bar.close > breakoutLevel;
 
         if (isBreakout) {
             breakoutFired=true; setupActive=false;
-
-            const brkStrOk = !F.brkStrength || (bar.close >= breakoutLevel + atrVal * F.brkStrengthMult);
-            const allFiltersOk = baseFiltersOk && brkStrOk;
 
             if (allFiltersOk) {
                 const stop=lockedHL - atrVal*stopBuffer;
@@ -682,7 +672,7 @@ function runStrategy(bars) {
                     color:'#00ee00', shape:'arrowUp', text:'BUY BO', size:2 });
                 signals.push({
                     type:'Breakout', time:bar.time, price:bar.close, stop, tp,
-                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk, greenOk, brkStrOk),
+                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk),
                 });
             } else {
                 // Filtered out — show a faint grey marker so user can see what was skipped
@@ -708,9 +698,6 @@ function runStrategy(bars) {
         if (isRetest) {
             retestFired=true; retestActive=false;
 
-            const brkStrOk = !F.brkStrength || (bar.close >= retestLevel + atrVal * F.brkStrengthMult);
-            const allFiltersOk = baseFiltersOk && brkStrOk;
-
             if (allFiltersOk) {
                 const stop=lockedHL - atrVal*stopBuffer;
                 const tp=bar.close + (bar.close - stop)*rrRatio;
@@ -718,7 +705,7 @@ function runStrategy(bars) {
                     color:'#00ccff', shape:'arrowUp', text:'BUY RT', size:2 });
                 signals.push({
                     type:'Retest', time:bar.time, price:bar.close, stop, tp,
-                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk, greenOk, brkStrOk),
+                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk),
                 });
             } else {
                 filteredCount++;
@@ -743,7 +730,7 @@ function runStrategy(bars) {
 }
 
 // Build a list of which filters passed (for signal tooltip)
-function buildTags(rth, ema, close, vol, atr, adx, vwap, session, green, brkStr) {
+function buildTags(rth, ema, close, vol, atr, adx, vwap, session) {
     const tags = [];
     if (CFG.filters.rth          && rth)    tags.push('RTH');
     if (CFG.filters.ema          && ema)    tags.push('EMA');
@@ -753,8 +740,6 @@ function buildTags(rth, ema, close, vol, atr, adx, vwap, session, green, brkStr)
     if (CFG.filters.adx          && adx)    tags.push('ADX');
     if (CFG.filters.vwap         && vwap)   tags.push('VWAP');
     if (CFG.filters.sessionHours && session)tags.push('Session');
-    if (CFG.filters.greenCandle  && green)  tags.push('Green');
-    if (CFG.filters.brkStrength  && brkStr) tags.push('Str');
     return tags;
 }
 
@@ -1030,10 +1015,10 @@ function renderSignals(signals) {
 
 function updateFilterCount() {
     const F = CFG.filters;
-    const active = [F.rth, F.ema, F.strongClose, F.volume, F.minStructure, F.minATR, F.adx, F.vwap, F.sessionHours, F.greenCandle, F.brkStrength].filter(Boolean).length;
+    const active = [F.rth, F.ema, F.strongClose, F.volume, F.minStructure, F.minATR, F.adx, F.vwap, F.sessionHours].filter(Boolean).length;
     const el = document.getElementById('filter-count');
-    el.textContent = `${active} / 11 on`;
-    el.className = active === 11 ? 'c-green' : active >= 6 ? 'c-yellow' : 'c-red';
+    el.textContent = `${active} / 9 on`;
+    el.className = active === 9 ? 'c-green' : active >= 5 ? 'c-yellow' : 'c-red';
 }
 
 // ============================================================
@@ -1050,7 +1035,6 @@ function toggleFilter(key) {
         rth:'fb-rth', ema:'fb-ema', strongClose:'fb-close',
         volume:'fb-volume', minStructure:'fb-structure', minATR:'fb-atr',
         adx:'fb-adx', vwap:'fb-vwap', sessionHours:'fb-session',
-        greenCandle:'fb-green', brkStrength:'fb-brkstr',
     };
     const btn = document.getElementById(idMap[key]);
     if (btn) btn.className = 'f-btn ' + (CFG.filters[key] ? 'on' : '');
