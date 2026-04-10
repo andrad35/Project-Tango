@@ -1186,16 +1186,42 @@ async function fetchBacktestData() {
     throw new Error('Could not fetch backtest data.\n' + errors.slice(0,3).join(' | '));
 }
 
-// Polygon.io — SPY 15m, 2 years
+// SPY backtest — Polygon.io if key provided, Yahoo Finance 60d fallback otherwise
 async function fetchPolygonSPY() {
-    const apiKey = document.getElementById('polygon-api-key')?.value.trim()
-                || localStorage.getItem('polygonKey') || '';
-    if (!apiKey) throw new Error('Enter your free Polygon.io API key above.\nGet one at: polygon.io/dashboard');
+    const apiKey = (document.getElementById('polygon-api-key')?.value.trim())
+                || (localStorage.getItem('polygonKey') || '');
 
+    // ── No API key → fall back to Yahoo Finance 60d SPY ──
+    if (!apiKey) {
+        document.getElementById('bt-status').textContent = 'No Polygon key — using Yahoo Finance (60 days)...';
+        const urls = [
+            'https://query1.finance.yahoo.com/v8/finance/chart/SPY?interval=15m&range=60d&includePrePost=false',
+            'https://query2.finance.yahoo.com/v8/finance/chart/SPY?interval=15m&range=60d&includePrePost=false',
+        ];
+        const proxies = [
+            u => u,
+            u => 'https://corsproxy.io/?' + encodeURIComponent(u),
+            u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+        ];
+        for (const base of urls) {
+            for (const wrap of proxies) {
+                try {
+                    const r = await fetchWithTimeout(wrap(base), 25000);
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    const data = parseYF(await r.json());
+                    if (data.bars.length > 100) return data;
+                } catch (e) { /* try next */ }
+            }
+        }
+        throw new Error('Could not fetch SPY data. Try adding a free Polygon.io API key for 2-year history.');
+    }
+
+    // ── API key present → Polygon.io 2 years ──
+    document.getElementById('bt-status').textContent = 'Fetching 2 years of SPY data from Polygon.io...';
     const to   = new Date();
     const from = new Date();
     from.setFullYear(from.getFullYear() - 2);
-    const fmt  = d => d.toISOString().slice(0, 10); // YYYY-MM-DD
+    const fmt  = d => d.toISOString().slice(0, 10);
 
     const url = `https://api.polygon.io/v2/aggs/ticker/SPY/range/15/minute/${fmt(from)}/${fmt(to)}` +
                 `?adjusted=true&sort=asc&limit=50000&apiKey=${apiKey}`;
@@ -1211,9 +1237,11 @@ async function fetchPolygonSPY() {
             const r = await fetchWithTimeout(wrap(url), 30000);
             if (!r.ok) throw new Error('HTTP ' + r.status);
             const json = await r.json();
-            if (json.status === 'ERROR') throw new Error(json.error || 'Polygon error');
+            if (json.status === 'ERROR') throw new Error('Polygon: ' + (json.error || 'invalid API key'));
             return parsePolygon(json);
-        } catch (e) { if (e.message.includes('API key') || e.message.includes('Polygon')) throw e; }
+        } catch (e) {
+            if (e.message.startsWith('Polygon:')) throw e; // surface key errors immediately
+        }
     }
     throw new Error('Could not reach Polygon.io. Check your API key and try again.');
 }
@@ -1378,9 +1406,12 @@ function openBacktest() {
     const overlay = document.getElementById('bt-overlay');
     overlay.style.display = 'flex';
     const isSPY = activeInstrument === 'SPY';
+    const polygonKey = (document.getElementById('polygon-api-key')?.value.trim()) || localStorage.getItem('polygonKey') || '';
     document.getElementById('bt-subtitle').textContent =
-        isSPY ? 'SPY ETF 15m — Last 2 Years (Polygon.io) — Filters Applied'
-               : 'ES Futures 15m — Last 60 Days — Filters Applied';
+        isSPY
+            ? (polygonKey ? 'SPY ETF 15m — Last 2 Years (Polygon.io) — Filters Applied'
+                          : 'SPY ETF 15m — Last 60 Days (Yahoo Finance) — Add Polygon key for 2yr')
+            : 'ES Futures 15m — Last 60 Days — Filters Applied';
     document.getElementById('polygon-key-wrap').style.display = isSPY ? 'flex' : 'none';
     // Restore saved API key
     const saved = localStorage.getItem('polygonKey');
@@ -1518,7 +1549,7 @@ function renderBTLog(trades) {
         <!-- Polygon API key — shown only in SPY mode -->
         <div id="polygon-key-wrap" style="display:none;align-items:center;gap:6px;">
             <label style="font-size:11px;color:#7d8590;">Polygon API Key</label>
-            <input id="polygon-api-key" type="text" placeholder="Free key: polygon.io/dashboard"
+            <input id="polygon-api-key" type="text" placeholder="Optional — polygon.io/dashboard (free, for 2yr history)"
                 style="width:200px;background:#21262d;border:1px solid #30363d;color:#e6edf3;
                        border-radius:5px;padding:3px 7px;font-size:11px;font-family:inherit;"
                 oninput="localStorage.setItem('polygonKey', this.value)">
