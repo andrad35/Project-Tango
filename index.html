@@ -216,7 +216,6 @@ body {
     <span class="badge badge-blue">ES Futures</span>
     <span class="badge badge-green">15m</span>
     <div class="price-display price-up" id="last-price">--</div>
-    <span id="htf-badge" style="font-size:11px;font-weight:700;color:#7d8590;letter-spacing:.04em;">1H: --</span>
     <div class="spacer"></div>
     <div id="countdown-wrap">
         <div id="countdown-ring">
@@ -275,7 +274,7 @@ body {
         <div id="filter-section">
             <div id="filter-title">
                 <span>Signal Filters</span>
-                <span id="filter-count" class="c-green">12 / 12 on</span>
+                <span id="filter-count" class="c-green">11 / 11 on</span>
             </div>
             <div id="filter-grid">
                 <button class="f-btn on" id="fb-rth"       onclick="toggleFilter('rth')">RTH Only</button>
@@ -287,7 +286,6 @@ body {
                 <button class="f-btn on" id="fb-adx"       onclick="toggleFilter('adx')">ADX &gt;20</button>
                 <button class="f-btn on" id="fb-vwap"      onclick="toggleFilter('vwap')">VWAP</button>
                 <button class="f-btn on" id="fb-session"   onclick="toggleFilter('sessionHours')">Sess Hrs</button>
-                <button class="f-btn on" id="fb-htf"       onclick="toggleFilter('htfEma')" style="grid-column:span 3;">1H EMA Trend</button>
                 <button class="f-btn on" id="fb-green"     onclick="toggleFilter('greenCandle')">Green Bar</button>
                 <button class="f-btn on" id="fb-brkstr"    onclick="toggleFilter('brkStrength')" style="grid-column:span 2;">Brk Strength</button>
             </div>
@@ -352,10 +350,6 @@ const CFG = {
         sessionHours:   true,   // high-probability hours only (open + power hour)
                                 //   Opening: 9:30–11:30 AM ET (directional momentum)
                                 //   Power hour: 2:00–4:00 PM ET (EOD positioning)
-
-        // ── Multi-timeframe confluence ──
-        htfEma:         true,   // 1H close above 1H EMA = higher-timeframe bullish trend
-        htfEmaLength:   21,     // 21-period EMA on the 1-hour chart
 
         // ── Signal conviction filters (targeting 75% win rate) ──
         greenCandle:      true,  // entry bar must close above open (bullish candle)
@@ -603,7 +597,6 @@ function runStrategy(bars) {
     const volAvg = calcSMA(vols, F.volumeAvgLen);
     const adxArr = calcADX(bars, F.adxLength);
     const vwap   = calcVWAP(bars);
-    _htf1hPtr = 0; // reset pointer for forward-walk alignment
 
     let prevHigh=null, lastHigh=null, prevLow=null, lastLow=null;
     let setupActive=false, breakoutLevel=null, breakoutFired=false, lockedHL=null;
@@ -670,9 +663,8 @@ function runStrategy(bars) {
         const adxOk      = !F.adx          || (adxArr[i] !== null && adxArr[i] >= F.adxThreshold);
         const vwapOk     = !F.vwap         || (vwap[i] !== null && bar.close > vwap[i]);
         const sessionOk  = !F.sessionHours || isSessionHour(bar.time);
-        const htfOk      = !F.htfEma       || htfBullishAt(bar.time);
         const greenOk    = !F.greenCandle  || bar.close > bar.open;
-        const baseFiltersOk = rthOk && emaOk && closeOk && volumeOk && atrOk && adxOk && vwapOk && sessionOk && htfOk && greenOk;
+        const baseFiltersOk = rthOk && emaOk && closeOk && volumeOk && atrOk && adxOk && vwapOk && sessionOk && greenOk;
 
         // ── Option A: Breakout ──
         const isBreakout = setupActive && !breakoutFired && breakoutLevel !== null && bar.close > breakoutLevel;
@@ -690,7 +682,7 @@ function runStrategy(bars) {
                     color:'#00ee00', shape:'arrowUp', text:'BUY BO', size:2 });
                 signals.push({
                     type:'Breakout', time:bar.time, price:bar.close, stop, tp,
-                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk, htfOk, greenOk, brkStrOk),
+                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk, greenOk, brkStrOk),
                 });
             } else {
                 // Filtered out — show a faint grey marker so user can see what was skipped
@@ -726,7 +718,7 @@ function runStrategy(bars) {
                     color:'#00ccff', shape:'arrowUp', text:'BUY RT', size:2 });
                 signals.push({
                     type:'Retest', time:bar.time, price:bar.close, stop, tp,
-                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk, htfOk, greenOk, brkStrOk),
+                    tags: buildTags(rthOk, emaOk, closeOk, volumeOk, atrOk, adxOk, vwapOk, sessionOk, greenOk, brkStrOk),
                 });
             } else {
                 filteredCount++;
@@ -751,7 +743,7 @@ function runStrategy(bars) {
 }
 
 // Build a list of which filters passed (for signal tooltip)
-function buildTags(rth, ema, close, vol, atr, adx, vwap, session, htf, green, brkStr) {
+function buildTags(rth, ema, close, vol, atr, adx, vwap, session, green, brkStr) {
     const tags = [];
     if (CFG.filters.rth          && rth)    tags.push('RTH');
     if (CFG.filters.ema          && ema)    tags.push('EMA');
@@ -761,7 +753,6 @@ function buildTags(rth, ema, close, vol, atr, adx, vwap, session, htf, green, br
     if (CFG.filters.adx          && adx)    tags.push('ADX');
     if (CFG.filters.vwap         && vwap)   tags.push('VWAP');
     if (CFG.filters.sessionHours && session)tags.push('Session');
-    if (CFG.filters.htfEma       && htf)    tags.push('1H');
     if (CFG.filters.greenCandle  && green)  tags.push('Green');
     if (CFG.filters.brkStrength  && brkStr) tags.push('Str');
     return tags;
@@ -1039,10 +1030,10 @@ function renderSignals(signals) {
 
 function updateFilterCount() {
     const F = CFG.filters;
-    const active = [F.rth, F.ema, F.strongClose, F.volume, F.minStructure, F.minATR, F.adx, F.vwap, F.sessionHours, F.htfEma, F.greenCandle, F.brkStrength].filter(Boolean).length;
+    const active = [F.rth, F.ema, F.strongClose, F.volume, F.minStructure, F.minATR, F.adx, F.vwap, F.sessionHours, F.greenCandle, F.brkStrength].filter(Boolean).length;
     const el = document.getElementById('filter-count');
-    el.textContent = `${active} / 12 on`;
-    el.className = active === 12 ? 'c-green' : active >= 7 ? 'c-yellow' : 'c-red';
+    el.textContent = `${active} / 11 on`;
+    el.className = active === 11 ? 'c-green' : active >= 6 ? 'c-yellow' : 'c-red';
 }
 
 // ============================================================
@@ -1058,7 +1049,7 @@ function toggleFilter(key) {
     const idMap = {
         rth:'fb-rth', ema:'fb-ema', strongClose:'fb-close',
         volume:'fb-volume', minStructure:'fb-structure', minATR:'fb-atr',
-        adx:'fb-adx', vwap:'fb-vwap', sessionHours:'fb-session', htfEma:'fb-htf',
+        adx:'fb-adx', vwap:'fb-vwap', sessionHours:'fb-session',
         greenCandle:'fb-green', brkStrength:'fb-brkstr',
     };
     const btn = document.getElementById(idMap[key]);
@@ -1109,13 +1100,9 @@ async function loadData() {
     document.getElementById('loading-msg').textContent = isFirstLoad ? 'Fetching 15-minute OHLCV data...' : 'Refreshing...';
 
     try {
-        const [{ bars, last }, d1h] = await Promise.all([fetchData(), fetch1hData()]);
+        const { bars, last } = await fetchData();
         _lastBars  = bars;
         _lastPrice = last;
-
-        // Build 1H EMA lookup — used by runStrategy() via htfBullishAt()
-        _htf1h = d1h ? build1hEma(d1h.bars, CFG.filters.htfEmaLength) : [];
-        updateHTFBadge();
 
         applyStrategy(bars, last, isFirstLoad);
 
