@@ -1,4 +1,4 @@
-const CACHE = 'hlhh-v1';
+const CACHE = 'hlhh-v2';
 const ASSETS = ['/', '/index.html', '/manifest.json'];
 
 self.addEventListener('install', e => {
